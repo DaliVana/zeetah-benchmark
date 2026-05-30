@@ -1,0 +1,46 @@
+.{
+    .name = .zeetah_benchmark,
+    .version = "0.1.0",
+    .fingerprint = 0x841e98d1f521df45,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        // Reproducible / CI path: a *pinned* zeetah checkout fetched by the
+        // Zig package manager. Disabled by default — the local dev flow
+        // resolves zeetah from a sibling checkout via -Dzeetah-src / the
+        // ZEETAH_SRC env var (see build.zig and the "CI" section of README.md),
+        // so it always measures whatever zeetah tree you point it at, including
+        // uncommitted changes.
+        //
+        // To enable the pinned path: push the zeetah ref you want to measure,
+        // then run (from this repo root):
+        //
+        //     zig fetch --save=zeetah \
+        //       https://github.com/<owner>/zig-regex/archive/<ref>.tar.gz
+        //
+        // which uncomments-equivalently rewrites the block below, then build
+        // with -Dpinned=true (or set it in the CI workflow).
+        //
+        // .zeetah = .{
+        //     .url = "https://github.com/zig-utils/zig-regex/archive/<ref>.tar.gz",
+        //     .hash = "...",
+        //     .lazy = true,
+        // },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "run_all.sh",
+        "aggregate.py",
+        "gen_corpus.py",
+        "zig_bench.zig",
+        "zig_dfa_bench.zig",
+        "mvzr_bench.zig",
+        "rust",
+        "dotnet",
+        "re2",
+        "python",
+        "README.md",
+        "FINDINGS.md",
+        "LICENSE",
+    },
+}

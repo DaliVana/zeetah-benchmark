@@ -1,0 +1,24 @@
+[package]
+name = "rust_bench"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "rust_bench"
+path = "src/main.rs"
+
+# Second harness: the `fancy-regex` engine (look-around / possessive /
+# backreferences) used by tiktoken & rustbpe — runs the real GPT-4
+# `tokenizer` pattern the base `regex` crate rejects by design.
+[[bin]]
+name = "fancy_bench"
+path = "src/bin/fancy_bench.rs"
+
+[dependencies]
+regex = "1"
+fancy-regex = "0.14"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

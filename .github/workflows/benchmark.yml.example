@@ -1,0 +1,67 @@
+# Cross-engine regex benchmark — CI TEMPLATE (not active).
+#
+# This file ends in `.example` on purpose: GitHub only runs `*.yml` / `*.yaml`
+# under .github/workflows, so this is inert until you rename it to
+# `benchmark.yml`. CI was intentionally deferred during the repo extraction —
+# see the "CI" section of README.md. Rename + fill the two placeholders below,
+# then commit to activate.
+#
+# Approach used here: the *default sibling-checkout* flow. The benchmark repo
+# and the zeetah engine are checked out side by side, and run_all.sh resolves
+# zeetah from ../zig-regex (its default $ZEETAH_SRC). To instead measure a
+# *pinned* zeetah package, wire the build.zig.zon dependency (see that file)
+# and pass -Dpinned=true rather than checking out the engine.
+#
+# Caveat: shared CI runners are noisy. Treat PR runs as a correctness-gate plus
+# a coarse perf signal, not a precise regression detector.
+
+name: Benchmark
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  benchmark:
+    # macOS: the suite is macOS-tuned (Homebrew RE2, Darwin CLOCK_UPTIME_RAW).
+    # For ubuntu-latest, first port the zeetah harness clock to CLOCK_MONOTONIC
+    # and install RE2 via apt.
+    runs-on: macos-latest
+    steps:
+      - name: Checkout benchmark repo
+        uses: actions/checkout@v4
+        with:
+          path: zeetah-benchmark
+
+      - name: Checkout zeetah engine (sibling)
+        uses: actions/checkout@v4
+        with:
+          # TODO: point at the engine repo + the ref you want to measure.
+          repository: zig-utils/zig-regex
+          ref: main
+          path: zig-regex
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: '0.16.0'
+
+      # macOS runners ship Rust, .NET, Python and Homebrew. run_all.sh
+      # `brew install`s RE2 + pkg-config itself (idempotent).
+
+      - name: Run benchmark suite
+        working-directory: zeetah-benchmark
+        run: ./run_all.sh
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: |
+            zeetah-benchmark/results.md
+            zeetah-benchmark/results.csv
