@@ -24,13 +24,18 @@ vendored — see **[zeetah source](#zeetah-source)** below.
 
 ## Run
 
+The benchmark runs in two modes.
+
+### 1. Ad-hoc full run — all competitors
+
 ```bash
 ./run_all.sh
 ```
 
-By default this builds the zeetah harnesses against a **sibling checkout** of
-the engine at `../zig-regex/` (see below). Outputs (git-ignored, regenerated
-each run):
+Builds and runs **all nine engines** (zeetah runtime + comptime-DFA, mvzr, RE2,
+Rust `regex`, `fancy-regex`, .NET, Python `re`, PyPI `regex`) against a sibling
+checkout of the engine at `../zig-regex/` (see below). Outputs (git-ignored,
+regenerated each run):
 
 - `results.md` — per-workload comparison tables
 - `results.csv` — raw rows from all engines
@@ -40,6 +45,38 @@ The script installs RE2 + pkg-config via Homebrew if missing (idempotent),
 vendors the pinned mvzr source, sets up a local `.venv` with the PyPI `regex`
 module (idempotent), generates the corpus, builds/runs all nine harnesses, then
 aggregates.
+
+### 2. Branch comparison — current vs target (the "PR" mode)
+
+```bash
+./run_compare.sh [TARGET_REF]      # TARGET_REF defaults to main
+```
+
+Builds **only the zeetah** runtime + comptime-DFA harnesses, twice: once against
+a **target ref** (the baseline — materialized in a throwaway `git worktree`, so
+your checkout is untouched) and once against the **current working tree** (the
+candidate — your branch, including uncommitted changes). The competitors are
+skipped (they don't change between zeetah branches), so this needs only `zig`,
+`python3` and `git` — no Homebrew/cargo/dotnet.
+
+Each side is measured `REPS` times (default 3), **interleaved** (base, cand,
+base, cand, …), and reduced to its best (minimum) sample per row by
+`reduce_runs.py`. That cancels the single-machine A/B bias where whichever side
+runs first sees a colder, less-throttled box — without it, identical source can
+show double-digit phantom regressions. `compare.py` then diffs per-workload
+throughput into `compare.md`.
+
+```bash
+ZEETAH_DIR=../zeetah ./run_compare.sh feat/vector-opts   # compare working tree vs that ref
+REGRESSION_PCT=10 REPS=5 ./run_compare.sh main           # gate threshold % / measurement rounds
+```
+
+It **exits non-zero** if any reliably-measured workload regresses past
+`REGRESSION_PCT` (default 10%), or if a non-pathological workload's match count
+changed between the two versions (a correctness divergence). Sub-microsecond ops
+vary across separate binaries, so rows whose baseline is below 50 µs/op are
+shown but never gated (`compare.py --min-ns`). This is the entry point the
+per-PR CI uses — see [CI](#ci).
 
 > **Platform note.** The suite is currently macOS-tuned: RE2 is installed via
 > Homebrew and the zeetah harness clock uses the Darwin-only
@@ -149,26 +186,42 @@ cross-engine orchestrator.
 
 ## CI
 
-GitHub Actions is **not wired up yet** (deliberately deferred). When adding it:
+The per-PR comparison runs from a GitHub Actions workflow that lives **in the
+zeetah engine repo** (where the PRs are), not here:
+`.github/workflows/bench-compare.yml`. On each PR to `main` it:
 
-- **Runner:** the suite is macOS-tuned, so `macos-latest` runs it as-is. A
-  `ubuntu-latest` run first needs the zeetah harness clock ported off
-  `CLOCK_UPTIME_RAW` and RE2 installed via `apt`.
-- **zeetah source:** use the pinned dependency path. Push the zeetah ref under
-  test, `zig fetch --save=zeetah <tarball-url>` (see `build.zig.zon`), then have
-  the workflow build with `-Dpinned=true` — or, if measuring an in-tree zeetah
-  PR, `actions/checkout` the engine into a sibling dir and keep the default
-  `ZEETAH_SRC`.
-- **Signal:** shared CI runners are noisy, so treat PR runs as a
-  **correctness-gate** plus a coarse perf signal, not a precise
-  regression detector. Commit a baseline CSV to diff against if you want a
-  perf delta.
+1. checks out the PR (candidate) and clones this benchmark repo;
+2. fetches the PR's base branch and runs `./run_compare.sh origin/<base>`, which
+   builds the zeetah runtime + DFA harnesses against both the base (baseline)
+   and the PR (candidate) and diffs them;
+3. posts `compare.md` as a sticky PR comment, and turns the check **red** on a
+   correctness divergence or a `>REGRESSION_PCT` slowdown.
+
+Setup notes:
+
+- **This repo must be reachable from CI.** It has no remote yet — push it to
+  GitHub and point the workflow's `BENCH_REPO_URL` / the `actions/checkout`
+  `repository:` at it (add a token if private).
+- **Runner:** `macos-latest` — the harness clock is the Darwin-only
+  `CLOCK_UPTIME_RAW`. Only zeetah is built in compare mode, so no
+  Homebrew/cargo/dotnet is needed (unlike the full `run_all.sh`).
+- **Zig version:** the workflow's `ZIG_VERSION` must compile **both** the engine
+  and the harness. The engine's `ci.yml` pins `0.17.0-dev.56+a8226cd53`; the
+  harness was validated locally on `0.16.0`. If a build fails, that env var is
+  the first knob.
+- **Signal:** shared CI runners are noisy. Sub-microsecond rows are excluded
+  from the gate (`--min-ns 50000`) and the default threshold is a deliberately
+  loose 10 %, so treat a green check as "no gross regression + correctness
+  held", not a precise micro-benchmark.
 
 ## Files
 
 | File | Role |
 |------|------|
-| `run_all.sh` | orchestrator (full cross-engine run) |
+| `run_all.sh` | orchestrator (full cross-engine run — mode 1) |
+| `run_compare.sh` | branch-comparison orchestrator (zeetah-only, baseline vs candidate — mode 2) |
+| `reduce_runs.py` | reduce N interleaved measurement rounds of one side to its best (min) per row |
+| `compare.py` | diff two zeetah runs → `compare.md`; gates on regression + correctness divergence |
 | `benchmarks.json` | **single source of truth** — every workload pattern, sizes, per-engine variants and which models apply |
 | `bench_common.py` | loads `benchmarks.json`, resolves the per-engine workload list (imported by the Python harnesses) |
 | `gen_workloads.py` | emits per-engine workload tables into `gen/` for the compiled harnesses |
