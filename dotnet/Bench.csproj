@@ -10,4 +10,8 @@
     <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
 
+  <ItemGroup>
+    <Compile Include="..\gen\workloads_dotnet.cs" />
+  </ItemGroup>
+
 </Project>

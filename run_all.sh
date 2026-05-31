@@ -82,6 +82,13 @@ fi
 echo "==> Generating deterministic corpus"
 python3 "$CMP/gen_corpus.py" "$CORPUS"
 
+echo "==> Generating per-engine workload sources (single source of truth)"
+# All workload patterns live in benchmarks.json; gen_workloads.py emits the
+# per-engine tables the compiled harnesses #include / @import (the Python
+# harnesses read benchmarks.json directly via bench_common.py). Generated into
+# the git-ignored gen/ dir before any harness is built.
+python3 "$CMP/gen_workloads.py"
+
 echo "==> [1/9] zeetah harness"
 # Compiled directly (no build.zig step) so the benchmark stays fully
 # self-contained and the zeetah source tree is untouched. The zeetah module
@@ -139,11 +146,13 @@ for i, wid in enumerate(ids):
         if r.returncode == 0 and r.stdout.strip():
             sys.stdout.write(r.stdout)
         else:
-            for s in SIZES:
-                print(f"mvzr,{wid},{s},0,-1,-1,0.00,-1,CRASHED")
+            for m in ("count", "count-spans", "grep"):
+                for s in SIZES:
+                    print(f"mvzr,{m},{wid},{s},0,-1,-1,0.00,-1,CRASHED")
     except subprocess.TimeoutExpired:
-        for s in SIZES:
-            print(f"mvzr,{wid},{s},0,-1,-1,0.00,-1,TIMEOUT")
+        for m in ("count", "count-spans", "grep"):
+            for s in SIZES:
+                print(f"mvzr,{m},{wid},{s},0,-1,-1,0.00,-1,TIMEOUT")
 PY
 python3 - "$CMP/mvzr_bench" >> "$CMP/mvzr.csv" <<'PY'
 import os, subprocess, sys, time
@@ -156,9 +165,9 @@ try:
     dt = time.perf_counter_ns() - t0
     secs = dt / 1_000_000_000.0
     tput = (N / 1_000_000.0) / secs if secs > 0 else 0.0
-    print(f"mvzr,pathological,{N},1,-1,{dt},{tput:.2f},0,ok")
+    print(f"mvzr,count,pathological,{N},1,-1,{dt},{tput:.2f},0,ok")
 except subprocess.TimeoutExpired:
-    print(f"mvzr,pathological,{N},0,-1,-1,0.00,-1,TIMEOUT")
+    print(f"mvzr,count,pathological,{N},0,-1,-1,0.00,-1,TIMEOUT")
 PY
 
 echo "==> [4/9] Rust regex harness"
@@ -189,7 +198,7 @@ echo "==> [9/9] Python regex-module harness (PyPI 'regex'; tokenizer-grade Unico
 
 echo "==> Aggregating"
 {
-    echo "engine,workload,input_bytes,iterations,compile_ns,search_ns_per_op,throughput_mb_s,match_count,note"
+    echo "engine,model,workload,input_bytes,iterations,compile_ns,search_ns_per_op,throughput_mb_s,match_count,note"
     cat "$CMP/zig.csv" "$CMP/zig_dfa.csv" "$CMP/mvzr.csv" "$CMP/re2.csv" "$CMP/rust.csv" "$CMP/fancy.csv" "$CMP/dotnet.csv" "$CMP/python.csv" "$CMP/python_regex.csv"
 } > "$CMP/results.csv"
 

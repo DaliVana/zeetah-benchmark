@@ -88,7 +88,12 @@ cross-engine orchestrator.
 
 ## Design
 
-- **Shared workload set** — see the `*_bench.*` sources. It spans:
+- **Single source of truth** — every workload (pattern, sizes, per-engine
+  variants, which models apply) lives in `benchmarks.json`. `gen_workloads.py`
+  emits the per-engine tables the compiled harnesses `@import`/`#include`; the
+  Python harnesses read the manifest directly through `bench_common.py`. A
+  pattern is therefore declared in exactly **one** place and cannot drift across
+  the nine harnesses. The workload set spans:
   - **fundamentals:** literal, quantifier, digits, `\w+`, alternation;
   - **typical real-world:** email, URI, IPv4, HTML title/href/tag, price,
     nltk, SSN, ModSecurity SQLi, AWS ENI, Apache POST, k8s/Fluentd log,
@@ -122,17 +127,23 @@ cross-engine orchestrator.
   `REJECTED`. Python's **stdlib `re`** lacks `\p{}` (verified) so it too
   emits `REJECTED` — but that is a stdlib limitation, not Python's: the
   `regex`-module row above is the fair Python data point.
-- **Timed operation:** count all leftmost, non-overlapping matches.
+- **Measurement models** (modeled on [rebar](https://github.com/BurntSushi/rebar)):
+  each corpus workload is timed under `count` (leftmost non-overlapping match
+  count), `count-spans` (sum of match lengths — forces full match-bounds
+  computation), `grep` (number of `\n`-delimited lines with ≥1 match) and, for
+  capture-bearing workloads, `count-captures` (participating capture groups,
+  group 0 excluded — exercises capture extraction). A separate `regex-redux`
+  row compiles a fixed set of patterns and counts each over the corpus once
+  (compile-many-search-once). The CSV carries a `model` column.
 - **Methodology:** compile and search timed in separate loops; reported value
   is the median of a loop sized to run ≥50 ms (5–500 iterations). zeetah
   uses libc for timing/IO because Zig 0.16 reworked `std.Io`/`std.time`.
 - **Correctness gate:** `aggregate.py` fails if match counts disagree across
-  engines for any non-`pathological` row. This includes `tokenizer`:
-  zeetah, `fancy-regex`, .NET and the PyPI `regex` module all run it and
-  **must agree** (they do — identical counts at every size: 212 / 1755 /
-  7116), which gates zeetah's tokenizer semantics against three
-  independent mainstream engines, including the ones production BPE
-  libraries actually use.
+  engines for any non-`pathological` `(model, workload, input_bytes)` row. This
+  includes `tokenizer`: zeetah, `fancy-regex`, .NET and the PyPI `regex` module
+  all run it and **must agree** at every size (gate-enforced), which gates
+  zeetah's tokenizer semantics against three independent mainstream engines,
+  including the ones production BPE libraries actually use.
 - **Input sizes:** corpus slices run up to 1 MiB; zeetah's `findAll` is a
   single linear leftmost-first NFA pass (no per-match restart).
 
@@ -158,9 +169,13 @@ GitHub Actions is **not wired up yet** (deliberately deferred). When adding it:
 | File | Role |
 |------|------|
 | `run_all.sh` | orchestrator (full cross-engine run) |
+| `benchmarks.json` | **single source of truth** — every workload pattern, sizes, per-engine variants and which models apply |
+| `bench_common.py` | loads `benchmarks.json`, resolves the per-engine workload list (imported by the Python harnesses) |
+| `gen_workloads.py` | emits per-engine workload tables into `gen/` for the compiled harnesses |
+| `gen/` | generated per-engine workload sources (git-ignored; regenerated each run) |
 | `build.zig` / `build.zig.zon` | `zig build bench` / `bench-dfa`; zeetah-source resolution + pinned-dep CI path |
 | `gen_corpus.py` | deterministic corpus generator |
-| `aggregate.py` | merge CSVs → `results.md`, enforce correctness gate |
+| `aggregate.py` | merge CSVs → `results.md`, enforce correctness gate (keyed on model+workload+size) |
 | `zig_bench.zig` | zeetah runtime harness (compiled against `$ZEETAH_SRC`) |
 | `zig_dfa_bench.zig` | zeetah comptime-DFA harness (`zeetah-dfa` engine) |
 | `mvzr_bench.zig` | mvzr harness (compiled against vendored `mvzr/`) |
@@ -169,6 +184,7 @@ GitHub Actions is **not wired up yet** (deliberately deferred). When adding it:
 | `rust/src/bin/fancy_bench.rs` | Rust `fancy-regex` harness (Cargo bin `fancy_bench`; tiktoken/rustbpe engine) |
 | `re2/bench.cpp` | RE2 harness (clang++ + pkg-config) |
 | `dotnet/` | .NET `Regex` harness (default backtracking engine, 2 s timeout) |
+| `python/bench_lib.py` | shared Python harness logic (models, timing, pathological child) imported by both Python harnesses |
 | `python/bench.py` | Python stdlib `re` harness (pathological run in a 2 s child) |
 | `python/bench_regex.py` | Python PyPI `regex`-module harness (run via local `.venv`) |
 | `FINDINGS.md` | historical cross-engine analysis writeup |

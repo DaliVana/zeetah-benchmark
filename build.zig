@@ -24,6 +24,12 @@ pub fn build(b: *std.Build) void {
 
     const zeetah_mod = resolveZeetah(b, target, optimize, pinned);
 
+    // Workload tables are generated from the single source of truth
+    // (benchmarks.json) into gen/ before the harnesses compile — they
+    // `@import("gen/workloads_*.zig")`. run_all.sh also runs this; doing it
+    // here keeps `zig build bench`/`bench-dfa` working standalone.
+    const gen_workloads = b.addSystemCommand(&.{ "python3", b.pathFromRoot("gen_workloads.py") });
+
     const harnesses = [_]struct { name: []const u8, src: []const u8, step: []const u8, desc: []const u8 }{
         .{ .name = "bench_compare", .src = "zig_bench.zig", .step = "bench", .desc = "Build+run the zeetah runtime-VM harness" },
         .{ .name = "zig_dfa_bench", .src = "zig_dfa_bench.zig", .step = "bench-dfa", .desc = "Build+run the zeetah comptime-DFA harness" },
@@ -40,6 +46,7 @@ pub fn build(b: *std.Build) void {
                 .imports = &.{.{ .name = "zeetah", .module = zeetah_mod }},
             }),
         });
+        exe.step.dependOn(&gen_workloads.step);
         b.installArtifact(exe);
 
         // `zig build <step>` builds and runs the harness. The corpus path comes

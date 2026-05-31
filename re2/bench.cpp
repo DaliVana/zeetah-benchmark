@@ -1,7 +1,21 @@
 // Cross-engine benchmark harness — RE2 side.
 //
-// Emits CSV rows (no header) with the schema shared by all three harnesses:
-//   engine,workload,input_bytes,iterations,compile_ns,search_ns_per_op,throughput_mb_s,match_count,note
+// Emits CSV rows (no header) with the schema shared by all harnesses
+// (note the `model` column):
+//
+//   engine,model,workload,input_bytes,iterations,compile_ns,search_ns_per_op,throughput_mb_s,match_count,note
+//
+// The workload table is NOT declared here: it is generated from the single
+// source of truth (benchmarks.json) into gen/workloads_re2.hpp by
+// gen_workloads.py, so patterns can never drift across the harnesses. This
+// file owns only the timing methodology and the per-model measurement logic.
+//
+// Models (faithful translation of zig_bench.zig):
+//   count           — leftmost non-overlapping match count (always run)
+//   count-spans     — sum of match lengths over the SAME walk (iff wl.spans)
+//   grep            — lines with >=1 match (iff wl.grep)
+//   count-captures  — participating capture groups, group 0 excluded (iff captures)
+//   regex-redux     — compile-many-search-once over a fixed member set (one row)
 //
 // Corpus path: CORPUS env var, else corpus.txt
 // (run_all.sh runs every harness from the repo root).
@@ -18,6 +32,8 @@
 #include <string>
 #include <vector>
 
+#include "../gen/workloads_re2.hpp"
+
 using clk = std::chrono::steady_clock;
 
 static uint64_t ns_since(clk::time_point t0) {
@@ -26,72 +42,18 @@ static uint64_t ns_since(clk::time_point t0) {
         .count();
 }
 
-struct Workload {
-    const char* id;
-    const char* pattern;
-    bool pathological;
-};
+static void emit_row(const char* model, const char* workload, size_t input_bytes,
+                     size_t iterations, int64_t compile_ns, int64_t search_ns,
+                     double throughput, int64_t match_count, const char* note) {
+    printf("re2,%s,%s,%zu,%zu,%lld,%lld,%.2f,%lld,%s\n", model, workload,
+           input_bytes, iterations, (long long)compile_ns, (long long)search_ns,
+           throughput, (long long)match_count, note);
+}
 
-static const Workload WORKLOADS[] = {
-    {"literal", "Sherlock", false},
-    {"quantifier", "a+", false},
-    {"digits", "[0-9]+", false},
-    {"word", "\\w+", false},
-    {"alternation", "cat|dog|bird|fish", false},
-    {"email", "[\\w\\.+-]+@[\\w\\.-]+\\.[\\w\\.-]+", false},
-    {"uri", "[\\w]+://[^/\\s?#]+[^\\s?#]+(?:\\?[^\\s#]*)?(?:#[^\\s]*)?", false},
-    {"ipv4", "(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)", false},
-    // Real-world workloads. Shell /.../ delimiters & stray markdown backticks
-    // stripped; named groups -> non-capturing (harness compares match counts);
-    // k8s leading ^ dropped so it matches log-shaped substrings anywhere.
-    {"html_title", "<h2 class=\"product-title\">(.*?)</h2>", false},
-    {"href", "href=\"([^\"]+)\"", false},
-    {"price", "\\$[\\d,]+\\.?\\d*", false},
-    {"nltk", "(?:[A-Z]\\.)+|\\w+(?:-\\w+)*|\\$?\\d+(?:\\.\\d+)?%?|\\.\\.\\.|[.,;\"'?():_\\-]", false},
-    {"ssn", "[0-9]{3,3}-[0-9]{2,2}-[0-9]{4,4}", false},
-    {"modsec_sqli", "([~!@#$%^&*()\\-+={}\\[\\]|:;\"'´’‘<>\\\\].*?){4,}", false},
-    {"aws_eni", "(?:eni-.*?) ", false},
-    {"apache_post", "POST (?:/[a-zA-Z0-9_]+){1,}", false},
-    {"k8s_fluentd", "(?:\\d{4}-\\d{1,2}-\\d{1,2} \\d{1,2}:\\d{1,2}:\\d{1,2}.\\d{3})\\s+(?:[^\\s]+)\\s+(?:\\d+).*?\\[\\s+(?:.*)\\]\\s+(?:.*)\\s+:\\s+(?:.*)", false},
-    // Typical + portable-edge additions.
-    {"date_iso", "[0-9]{4}-[0-9]{2}-[0-9]{2}", false},
-    {"time_hms", "[0-9]{2}:[0-9]{2}:[0-9]{2}", false},
-    {"phone_us", "\\(?[0-9]{3}\\)?[ .-][0-9]{3}[ .-][0-9]{4}", false},
-    {"hex_color", "#[0-9a-fA-F]{6}", false},
-    {"uuid", "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", false},
-    {"mac_addr", "(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}", false},
-    {"semver", "v?[0-9]+\\.[0-9]+\\.[0-9]+", false},
-    {"credit_card", "[0-9]{4}[ -][0-9]{4}[ -][0-9]{4}[ -][0-9]{4}", false},
-    {"log_level", "(?:TRACE|DEBUG|INFO|WARN|ERROR|FATAL)", false},
-    {"html_tag", "<[^>]+>", false},
-    {"hashtag", "#[A-Za-z0-9_]+", false},
-    {"float_sci", "[-+]?[0-9]*\\.?[0-9]+(?:[eE][-+]?[0-9]+)?", false},
-    {"json_string", "\"(?:[^\"\\\\]|\\\\.)*\"", false},
-    {"base64", "(?:[A-Za-z0-9+/]{4})+={0,2}", false},
-    {"path_unix", "(?:/[A-Za-z0-9_.-]+)+", false},
-    {"deep_alternation", "\\b(?:break|case|catch|class|const|continue|default|delete|do|else|enum|export|extends|false|finally|for|function|if|import|in|instanceof|new|null|return|super|switch|this|throw|true|try|typeof|var|void|while|with|yield|async|await|let)\\b", false},
-    {"wildcard_gaps", "foo.*bar.*baz", false},
-    // Real-world multiline: every full log line that begins with an ISO date
-    // (`(?m)` makes `^`/`$` per-line anchors). Zeetah uses the `.multiline`
-    // struct-flag peer of this inline form.
-    {"multiline_log", "(?m)^[0-9]{4}-[0-9]{2}-[0-9]{2}.*$", false},
-    // Feature-heavy: RE2 has no backreferences, look-around or atomic groups
-    // (linear-automaton by design) — these fail re.ok() and emit REJECTED.
-    {"backref_word", "(\\b[A-Za-z]+\\b) \\1", false},
-    {"lookbehind_amount", "(?<=\\$)[0-9]+(?:\\.[0-9]{2})?", false},
-    {"unicode_prop", "[\\p{L}\\p{N}_]+", false},
-    {"atomic_token", "(?>[A-Za-z0-9_]+)@", false},
-    // GPT-4 pre-tokenizer. RE2 has no lookaround or possessive quantifiers,
-    // so RE2::ok() is false here -> REJECTED row.
-    {"tokenizer", "(?i:[sdmt]|ll|ve|re)|[^\\r\\n\\p{L}\\p{N}]?+\\p{L}+|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]++[\\r\\n]|\\s[\\r\\n]|\\s+(?!\\S)|\\s+", false},
-    {"pathological", "(a+)+b", true},
-};
+// --- per-model match functions over [0, len) -------------------------------
 
-// Capped at 32 KiB so Zeetah's O(n^2) findAll finishes in tolerable time;
-// RE2/Rust scale linearly and are nowhere near their limits here.
-static const size_t CORPUS_SIZES[] = {1024, 8192, 32768, 1048576};
-
-// Count leftmost, non-overlapping matches over [0, len).
+// count: leftmost, non-overlapping match count (the empty-match advance is the
+// canonical pos = mend>mstart ? mend : mend+1).
 static size_t scan_count(const RE2& re, re2::StringPiece text) {
     size_t count = 0;
     size_t pos = 0;
@@ -106,28 +68,73 @@ static size_t scan_count(const RE2& re, re2::StringPiece text) {
     return count;
 }
 
-static void bench_one(const Workload& wl, const char* data, size_t len) {
-    re2::StringPiece text(data, len);
-
-    // --- compile timing ---
-    const int compile_iters = 50;
-    uint64_t compile_min = UINT64_MAX;
-    for (int i = 0; i < compile_iters; i++) {
-        auto t0 = clk::now();
-        RE2 re(wl.pattern);
-        uint64_t dt = ns_since(t0);
-        if (!re.ok()) {
-            printf("re2,%s,%zu,0,-1,-1,0.00,-1,REJECTED\n", wl.id, len);
-            return;
-        }
-        if (dt < compile_min) compile_min = dt;
+// count-spans: sum of match lengths over the SAME walk as scan_count.
+static size_t scan_spans(const RE2& re, re2::StringPiece text) {
+    size_t sum = 0;
+    size_t pos = 0;
+    re2::StringPiece group;
+    while (pos <= text.size() &&
+           re.Match(text, pos, text.size(), RE2::UNANCHORED, &group, 1)) {
+        size_t mstart = (size_t)(group.data() - text.data());
+        size_t mend = mstart + group.size();
+        sum += (mend - mstart);
+        pos = (mend > mstart) ? mend : mend + 1;
     }
-    RE2 re(wl.pattern);
+    return sum;
+}
 
-    // --- search timing ---
-    (void)scan_count(re, text);  // warmup
+// grep: number of segments (split on '\n', trailing fragment included when
+// non-empty) containing >=1 match.
+static size_t scan_grep(const RE2& re, re2::StringPiece text) {
+    const char* data = text.data();
+    size_t len = text.size();
+    size_t n = 0;
+    size_t start = 0;
+    for (size_t i = 0; i < len; i++) {
+        if (data[i] == '\n') {
+            if (RE2::PartialMatch(re2::StringPiece(data + start, i - start), re)) n++;
+            start = i + 1;
+        }
+    }
+    if (start < len &&
+        RE2::PartialMatch(re2::StringPiece(data + start, len - start), re))
+        n++;
+    return n;
+}
+
+// count-captures: participating capture groups summed over all non-overlapping
+// matches, group 0 (the whole match) excluded. A group participates iff its
+// StringPiece slot has non-null data().
+static size_t scan_captures(const RE2& re, re2::StringPiece text) {
+    int ngroups = re.NumberOfCapturingGroups();
+    if (ngroups < 0) ngroups = 0;
+    size_t total = 0;
+    size_t pos = 0;
+    // groups[0] is the whole match; groups[1..=ngroups] are capture groups.
+    std::vector<re2::StringPiece> groups((size_t)ngroups + 1);
+    while (pos <= text.size() &&
+           re.Match(text, pos, text.size(), RE2::UNANCHORED, groups.data(),
+                    ngroups + 1)) {
+        size_t mstart = (size_t)(groups[0].data() - text.data());
+        size_t mend = mstart + groups[0].size();
+        for (int i = 1; i <= ngroups; i++) {
+            if (groups[i].data() != nullptr) total++;
+        }
+        pos = (mend > mstart) ? mend : mend + 1;
+    }
+    return total;
+}
+
+// --- generic per-model measurement -----------------------------------------
+
+// Run one model: warm up, probe, size the timed loop (5..500 iters, ~50 ms),
+// report the median. fn returns the match_count for that model.
+template <typename Fn>
+static void measure(Fn fn, const char* model, const char* wl_id,
+                    const RE2& re, re2::StringPiece text, int64_t compile_ns) {
+    size_t mc = fn(re, text);  // warmup
     auto p0 = clk::now();
-    size_t match_count = scan_count(re, text);
+    mc = fn(re, text);
     uint64_t probe = std::max<uint64_t>(ns_since(p0), 1);
 
     size_t iters = (size_t)std::min<uint64_t>(
@@ -136,19 +143,138 @@ static void bench_one(const Workload& wl, const char* data, size_t len) {
     samples.reserve(iters);
     for (size_t i = 0; i < iters; i++) {
         auto t0 = clk::now();
-        (void)scan_count(re, text);
+        (void)fn(re, text);
         samples.push_back(ns_since(t0));
     }
     std::sort(samples.begin(), samples.end());
     uint64_t median = samples[iters / 2];
 
-    double mb = (double)len / 1000000.0;
+    double mb = (double)text.size() / 1000000.0;
     double secs = (double)median / 1000000000.0;
     double throughput = secs > 0.0 ? mb / secs : 0.0;
 
-    printf("re2,%s,%zu,%zu,%llu,%llu,%.2f,%zu,ok\n", wl.id, len, iters,
-           (unsigned long long)compile_min, (unsigned long long)median,
-           throughput, match_count);
+    emit_row(model, wl_id, text.size(), iters, compile_ns, (int64_t)median,
+             throughput, (int64_t)mc, "ok");
+}
+
+// Emit a REJECTED row for every model this workload would have run (mirrors
+// zig_bench.zig's emitRejected so the per-model report sections stay aligned).
+static void emit_rejected(const Workload& wl, size_t len) {
+    emit_row("count", wl.id, len, 0, -1, -1, 0.0, -1, "REJECTED");
+    if (wl.spans) emit_row("count-spans", wl.id, len, 0, -1, -1, 0.0, -1, "REJECTED");
+    if (wl.grep) emit_row("grep", wl.id, len, 0, -1, -1, 0.0, -1, "REJECTED");
+    if (wl.captures) emit_row("count-captures", wl.id, len, 0, -1, -1, 0.0, -1, "REJECTED");
+}
+
+static void bench_one(const Workload& wl, const char* data, size_t len) {
+    re2::StringPiece text(data, len);
+
+    if (wl.force_reject) {
+        emit_rejected(wl, len);
+        return;
+    }
+
+    // --- compile timing (min over 50 constructions; also rejection) ---
+    const int compile_iters = 50;
+    uint64_t compile_min = UINT64_MAX;
+    for (int i = 0; i < compile_iters; i++) {
+        auto t0 = clk::now();
+        RE2 re(wl.pattern);
+        uint64_t dt = ns_since(t0);
+        // RE2 rejects lookaround/backref/atomic/possessive (linear-automaton by
+        // design). \p{L} IS supported, so unicode_prop compiles.
+        if (!re.ok()) {
+            emit_rejected(wl, len);
+            return;
+        }
+        if (dt < compile_min) compile_min = dt;
+    }
+    RE2 re(wl.pattern);
+    if (!re.ok()) {
+        emit_rejected(wl, len);
+        return;
+    }
+    int64_t cns = (int64_t)compile_min;
+
+    // count always runs. pathological workloads run ONLY count.
+    measure(scan_count, "count", wl.id, re, text, cns);
+    if (wl.pathological) return;
+
+    if (wl.spans) measure(scan_spans, "count-spans", wl.id, re, text, cns);
+    if (wl.grep) measure(scan_grep, "grep", wl.id, re, text, cns);
+    if (wl.captures) measure(scan_captures, "count-captures", wl.id, re, text, cns);
+}
+
+// regex-redux: compile every member pattern, then one rep = sum over members
+// of scan_count(member_re, corpus_prefix). Total compile = min over 50 of
+// compiling ALL members; throughput over (REDUX_MEMBERS_N * input_bytes).
+static void bench_redux(const std::string& corpus) {
+    if (REDUX_MEMBERS_N == 0) return;
+    size_t n = std::min(REDUX_SIZE, corpus.size());
+    re2::StringPiece text(corpus.data(), n);
+
+    // --- compile timing: min over 50 of compiling ALL members ---
+    uint64_t compile_min = UINT64_MAX;
+    for (int it = 0; it < 50; it++) {
+        auto t0 = clk::now();
+        bool ok = true;
+        for (size_t k = 0; k < REDUX_MEMBERS_N; k++) {
+            RE2 re(REDUX_MEMBERS[k]);
+            if (!re.ok()) { ok = false; break; }
+        }
+        uint64_t dt = ns_since(t0);
+        if (!ok) {
+            emit_row("regex-redux", "redux", n, 0, -1, -1, 0.0, -1, "REJECTED");
+            return;
+        }
+        if (dt < compile_min) compile_min = dt;
+    }
+
+    // --- build once for the search loop ---
+    std::vector<RE2*> compiled;
+    compiled.reserve(REDUX_MEMBERS_N);
+    for (size_t k = 0; k < REDUX_MEMBERS_N; k++) {
+        RE2* re = new RE2(REDUX_MEMBERS[k]);
+        if (!re->ok()) {
+            delete re;
+            for (RE2* p : compiled) delete p;
+            emit_row("regex-redux", "redux", n, 0, -1, -1, 0.0, -1, "REJECTED");
+            return;
+        }
+        compiled.push_back(re);
+    }
+
+    auto redux_run = [&]() -> size_t {
+        size_t t = 0;
+        for (RE2* re : compiled) t += scan_count(*re, text);
+        return t;
+    };
+
+    size_t total = redux_run();  // warmup
+    auto p0 = clk::now();
+    total = redux_run();
+    uint64_t probe = std::max<uint64_t>(ns_since(p0), 1);
+
+    size_t iters = (size_t)std::min<uint64_t>(
+        500, std::max<uint64_t>(5, 50000000ull / probe));
+    std::vector<uint64_t> samples;
+    samples.reserve(iters);
+    for (size_t i = 0; i < iters; i++) {
+        auto t0 = clk::now();
+        (void)redux_run();
+        samples.push_back(ns_since(t0));
+    }
+    std::sort(samples.begin(), samples.end());
+    uint64_t median = samples[iters / 2];
+
+    double mb = (double)(REDUX_MEMBERS_N * n) / 1000000.0;
+    double secs = (double)median / 1000000000.0;
+    double throughput = secs > 0.0 ? mb / secs : 0.0;
+
+    emit_row("regex-redux", "redux", n, iters, (int64_t)compile_min,
+             (int64_t)median, throughput, (int64_t)total, "ok");
+
+    for (RE2* p : compiled) delete p;
 }
 
 int main() {
@@ -163,17 +289,20 @@ int main() {
     ss << f.rdbuf();
     std::string corpus = ss.str();
 
-    std::string path_input(50000, 'a');
+    std::string synth(SYNTHETIC_LEN, 'a');
 
-    for (const auto& wl : WORKLOADS) {
+    for (size_t w = 0; w < WORKLOADS_N; w++) {
+        const Workload& wl = WORKLOADS[w];
         if (wl.pathological) {
-            bench_one(wl, path_input.data(), path_input.size());
+            bench_one(wl, synth.data(), synth.size());
         } else {
-            for (size_t sz : CORPUS_SIZES) {
-                size_t n = std::min(sz, corpus.size());
+            for (size_t s = 0; s < CORPUS_SIZES_N; s++) {
+                size_t n = std::min(CORPUS_SIZES[s], corpus.size());
                 bench_one(wl, corpus.data(), n);
             }
         }
     }
+
+    bench_redux(corpus);
     return 0;
 }

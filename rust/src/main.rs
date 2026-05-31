@@ -1,7 +1,22 @@
 //! Cross-engine benchmark harness — Rust `regex` crate side.
 //!
-//! Emits CSV rows (no header) with the schema shared by all three harnesses:
-//!   engine,workload,input_bytes,iterations,compile_ns,search_ns_per_op,throughput_mb_s,match_count,note
+//! Emits CSV rows (no header) with the schema shared by all harnesses (note
+//! the `model` column — run_all.sh adds the header):
+//!
+//!   engine,model,workload,input_bytes,iterations,compile_ns,search_ns_per_op,throughput_mb_s,match_count,note
+//!
+//! The workload table is NOT declared here: it is generated from the single
+//! source of truth (`benchmarks.json`) into `gen/workloads_rust.rs` by
+//! `gen_workloads.py`, so patterns can never drift across the harnesses.
+//! This file owns only the timing methodology and the per-model measurement
+//! logic.
+//!
+//! Models: `count` (leftmost non-overlapping match count — always run),
+//! `count-spans` (sum of match lengths over the SAME match walk as count),
+//! `grep` (lines with >=1 match), `count-captures` (participating capture
+//! groups, group 0 excluded) and `regex-redux` (compile-many-search-once over
+//! a fixed member set). Which extra models run per workload is baked into the
+//! generated table.
 //!
 //! Corpus path: CORPUS env var, else corpus.txt
 //! (run_all.sh runs every harness from the repo root).
@@ -9,88 +24,139 @@
 use regex::Regex;
 use std::time::Instant;
 
-struct Workload {
-    id: &'static str,
-    pattern: &'static str,
-    pathological: bool,
+// Brings in `Kind`, `Workload`, `WORKLOADS`, `REDUX_MEMBERS`, `CORPUS_SIZES`,
+// `SYNTHETIC_LEN`, `REDUX_SIZE`. CARGO_MANIFEST_DIR is the rust/ dir, so this
+// resolves to repo-root/gen/workloads_rust.rs.
+include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../gen/workloads_rust.rs"));
+
+const ENGINE: &str = "rust-regex";
+
+fn emit_row(
+    model: &str,
+    workload: &str,
+    input_bytes: usize,
+    iterations: usize,
+    compile_ns: i128,
+    search_ns: i128,
+    throughput: f64,
+    match_count: i128,
+    note: &str,
+) {
+    println!(
+        "{},{},{},{},{},{},{},{:.2},{},{}",
+        ENGINE, model, workload, input_bytes, iterations, compile_ns, search_ns, throughput,
+        match_count, note
+    );
 }
 
-const WORKLOADS: &[Workload] = &[
-    Workload { id: "literal",      pattern: "Sherlock",                                              pathological: false },
-    Workload { id: "quantifier",   pattern: "a+",                                                    pathological: false },
-    Workload { id: "digits",       pattern: "[0-9]+",                                                pathological: false },
-    Workload { id: "word",         pattern: r"\w+",                                                  pathological: false },
-    Workload { id: "alternation",  pattern: "cat|dog|bird|fish",                                     pathological: false },
-    Workload { id: "email",        pattern: r"[\w\.+-]+@[\w\.-]+\.[\w\.-]+",                          pathological: false },
-    Workload { id: "uri",          pattern: r"[\w]+://[^/\s?#]+[^\s?#]+(?:\?[^\s#]*)?(?:#[^\s]*)?",   pathological: false },
-    Workload { id: "ipv4",         pattern: r"(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)", pathological: false },
-    // Real-world workloads. Shell `/.../` delimiters & stray markdown backticks
-    // stripped; named groups -> non-capturing (harness compares match counts);
-    // the k8s pattern's leading `^` is dropped so it matches log-shaped
-    // substrings anywhere in the token corpus.
-    Workload { id: "html_title",   pattern: r#"<h2 class="product-title">(.*?)</h2>"#, pathological: false },
-    Workload { id: "href",         pattern: r#"href="([^"]+)""#, pathological: false },
-    Workload { id: "price",        pattern: r#"\$[\d,]+\.?\d*"#, pathological: false },
-    Workload { id: "nltk",         pattern: r#"(?:[A-Z]\.)+|\w+(?:-\w+)*|\$?\d+(?:\.\d+)?%?|\.\.\.|[.,;"'?():_\-]"#, pathological: false },
-    Workload { id: "ssn",          pattern: r#"[0-9]{3,3}-[0-9]{2,2}-[0-9]{4,4}"#, pathological: false },
-    Workload { id: "modsec_sqli",  pattern: r#"([~!@#$%^&*()\-+={}\[\]|:;"'´’‘<>\\].*?){4,}"#, pathological: false },
-    Workload { id: "aws_eni",      pattern: r#"(?:eni-.*?) "#, pathological: false },
-    Workload { id: "apache_post",  pattern: r#"POST (?:/[a-zA-Z0-9_]+){1,}"#, pathological: false },
-    Workload { id: "k8s_fluentd",  pattern: r#"(?:\d{4}-\d{1,2}-\d{1,2} \d{1,2}:\d{1,2}:\d{1,2}.\d{3})\s+(?:[^\s]+)\s+(?:\d+).*?\[\s+(?:.*)\]\s+(?:.*)\s+:\s+(?:.*)"#, pathological: false },
-    // Typical + portable-edge additions.
-    Workload { id: "date_iso",     pattern: r"[0-9]{4}-[0-9]{2}-[0-9]{2}",                            pathological: false },
-    Workload { id: "time_hms",     pattern: r"[0-9]{2}:[0-9]{2}:[0-9]{2}",                            pathological: false },
-    Workload { id: "phone_us",     pattern: r"\(?[0-9]{3}\)?[ .-][0-9]{3}[ .-][0-9]{4}",              pathological: false },
-    Workload { id: "hex_color",    pattern: r"#[0-9a-fA-F]{6}",                                       pathological: false },
-    Workload { id: "uuid",         pattern: r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", pathological: false },
-    Workload { id: "mac_addr",     pattern: r"(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}",                  pathological: false },
-    Workload { id: "semver",       pattern: r"v?[0-9]+\.[0-9]+\.[0-9]+",                              pathological: false },
-    Workload { id: "credit_card",  pattern: r"[0-9]{4}[ -][0-9]{4}[ -][0-9]{4}[ -][0-9]{4}",          pathological: false },
-    Workload { id: "log_level",    pattern: r"(?:TRACE|DEBUG|INFO|WARN|ERROR|FATAL)",                 pathological: false },
-    Workload { id: "html_tag",     pattern: r"<[^>]+>",                                               pathological: false },
-    Workload { id: "hashtag",      pattern: r"#[A-Za-z0-9_]+",                                        pathological: false },
-    Workload { id: "float_sci",    pattern: r"[-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?",              pathological: false },
-    Workload { id: "json_string",  pattern: r#""(?:[^"\\]|\\.)*""#,                                   pathological: false },
-    Workload { id: "base64",       pattern: r"(?:[A-Za-z0-9+/]{4})+={0,2}",                           pathological: false },
-    Workload { id: "path_unix",    pattern: r"(?:/[A-Za-z0-9_.-]+)+",                                 pathological: false },
-    Workload { id: "deep_alternation", pattern: r"\b(?:break|case|catch|class|const|continue|default|delete|do|else|enum|export|extends|false|finally|for|function|if|import|in|instanceof|new|null|return|super|switch|this|throw|true|try|typeof|var|void|while|with|yield|async|await|let)\b", pathological: false },
-    Workload { id: "wildcard_gaps", pattern: r"foo.*bar.*baz",                                        pathological: false },
-    // Real-world multiline: every full log line that begins with an ISO date
-    // (`(?m)` makes `^`/`$` per-line anchors). Zeetah spells this with the
-    // `.multiline` struct flag; without multiline `^…$` matches at most once.
-    Workload { id: "multiline_log", pattern: r"(?m)^[0-9]{4}-[0-9]{2}-[0-9]{2}.*$",                   pathological: false },
-    // Feature-heavy: the base `regex` crate has no backreferences, look-around
-    // or atomic groups — these `Regex::new` -> Err -> REJECTED (gate-skipped).
-    Workload { id: "backref_word", pattern: r"(\b[A-Za-z]+\b) \1",                                    pathological: false },
-    Workload { id: "lookbehind_amount", pattern: r"(?<=\$)[0-9]+(?:\.[0-9]{2})?",                     pathological: false },
-    Workload { id: "unicode_prop", pattern: r"[\p{L}\p{N}_]+",                                        pathological: false },
-    Workload { id: "atomic_token", pattern: r"(?>[A-Za-z0-9_]+)@",                                    pathological: false },
-    // GPT-4 pre-tokenizer. The Rust `regex` crate has no lookaround or
-    // possessive quantifiers, so `Regex::new` errors -> REJECTED row.
-    Workload { id: "tokenizer",    pattern: r"(?i:[sdmt]|ll|ve|re)|[^\r\n\p{L}\p{N}]?+\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]++[\r\n]|\s[\r\n]|\s+(?!\S)|\s+", pathological: false },
-    Workload { id: "pathological", pattern: "(a+)+b",                                                pathological: true  },
-];
+// --- per-model match functions (uniform signature) --------------------------
 
-// Capped at 32 KiB so Zeetah's O(n²) findAll finishes in tolerable time;
-// RE2/Rust scale linearly and are nowhere near their limits here.
-const CORPUS_SIZES: &[usize] = &[1024, 8192, 32768, 1048576];
+/// count: leftmost, non-overlapping match count.
+fn m_count(re: &Regex, text: &str) -> usize {
+    re.find_iter(text).count()
+}
+
+/// count-spans: sum of match lengths over the same match walk as count.
+fn m_spans(re: &Regex, text: &str) -> usize {
+    re.find_iter(text).map(|m| m.end() - m.start()).sum::<usize>()
+}
+
+/// grep: number of lines (segments split on '\n') containing >=1 match.
+fn m_grep(re: &Regex, text: &str) -> usize {
+    text.split('\n').filter(|seg| re.is_match(seg)).count()
+}
+
+/// count-captures: participating capture groups summed over all matches,
+/// group 0 (the whole match) excluded.
+fn m_captures(re: &Regex, text: &str) -> usize {
+    let mut n = 0usize;
+    for caps in re.captures_iter(text) {
+        for i in 1..caps.len() {
+            if caps.get(i).is_some() {
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
+/// Run one model: warm up, probe, size the timed loop to >=50 ms (5..500
+/// iterations), report the median.
+fn measure(
+    f: &dyn Fn(&Regex, &str) -> usize,
+    model: &str,
+    wl_id: &str,
+    re: &Regex,
+    text: &str,
+    compile_ns: i128,
+) {
+    let mc = f(re, text); // warmup
+    let probe0 = Instant::now();
+    let _ = f(re, text);
+    let probe = probe0.elapsed().as_nanos().max(1);
+
+    let iters = (50_000_000u128 / probe).clamp(5, 500) as usize;
+    let mut samples = Vec::with_capacity(iters);
+    for _ in 0..iters {
+        let t0 = Instant::now();
+        let _ = f(re, text);
+        samples.push(t0.elapsed().as_nanos());
+    }
+    samples.sort_unstable();
+    let median = samples[iters / 2];
+
+    let mb = text.len() as f64 / 1_000_000.0;
+    let secs = median as f64 / 1_000_000_000.0;
+    let throughput = if secs > 0.0 { mb / secs } else { 0.0 };
+    emit_row(
+        model,
+        wl_id,
+        text.len(),
+        iters,
+        compile_ns,
+        median as i128,
+        throughput,
+        mc as i128,
+        "ok",
+    );
+}
+
+/// Emit a REJECTED row for every model this workload would have run (keeps the
+/// per-model report sections consistent).
+fn emit_rejected(wl: &Workload, len: usize) {
+    emit_row("count", wl.id, len, 0, -1, -1, 0.0, -1, "REJECTED");
+    if wl.spans {
+        emit_row("count-spans", wl.id, len, 0, -1, -1, 0.0, -1, "REJECTED");
+    }
+    if wl.grep {
+        emit_row("grep", wl.id, len, 0, -1, -1, 0.0, -1, "REJECTED");
+    }
+    if wl.captures {
+        emit_row("count-captures", wl.id, len, 0, -1, -1, 0.0, -1, "REJECTED");
+    }
+}
 
 fn bench_one(wl: &Workload, input: &[u8]) {
+    let len = input.len();
+
+    if wl.force_reject {
+        emit_rejected(wl, len);
+        return;
+    }
+
     let text = std::str::from_utf8(input).expect("corpus must be valid UTF-8");
 
-    // --- compile timing ---
+    // --- compile timing (and rejection handling) ---
     let compile_iters = 50u32;
-    let mut compile_min = u128::MAX;
+    let mut compile_min = i128::MAX;
     for _ in 0..compile_iters {
         let t0 = Instant::now();
         let r = Regex::new(wl.pattern);
-        let dt = t0.elapsed().as_nanos();
-        match r {
-            Ok(_) => {}
-            Err(_) => {
-                println!("rust-regex,{},{},0,-1,-1,0.00,-1,REJECTED", wl.id, input.len());
-                return;
-            }
+        let dt = t0.elapsed().as_nanos() as i128;
+        if r.is_err() {
+            // base `regex` rejects lookaround/backref/atomic/possessive.
+            emit_rejected(wl, len);
+            return;
         }
         if dt < compile_min {
             compile_min = dt;
@@ -98,48 +164,110 @@ fn bench_one(wl: &Workload, input: &[u8]) {
     }
     let re = Regex::new(wl.pattern).unwrap();
 
-    // --- search timing: count leftmost, non-overlapping matches ---
-    let _ = re.find_iter(text).count(); // warmup
+    measure(&m_count, "count", wl.id, &re, text, compile_min);
+    if wl.spans {
+        measure(&m_spans, "count-spans", wl.id, &re, text, compile_min);
+    }
+    if wl.grep {
+        measure(&m_grep, "grep", wl.id, &re, text, compile_min);
+    }
+    if wl.captures {
+        measure(&m_captures, "count-captures", wl.id, &re, text, compile_min);
+    }
+}
+
+/// regex-redux: compile every member pattern and `count` each once over the
+/// corpus prefix, reporting total compile time (min over 50), median search
+/// time and the summed count. Its own report section; throughput is the
+/// aggregate bytes/s (members * bytes).
+fn bench_redux(corpus: &[u8]) {
+    if REDUX_MEMBERS.is_empty() {
+        return;
+    }
+    let n = REDUX_SIZE.min(corpus.len());
+    let text = std::str::from_utf8(&corpus[..n]).expect("corpus must be valid UTF-8");
+
+    // --- compile timing: min over 50 of compiling ALL members ---
+    let mut compile_min = i128::MAX;
+    for _ in 0..50 {
+        let t0 = Instant::now();
+        let mut ok = true;
+        let mut compiled: Vec<Regex> = Vec::with_capacity(REDUX_MEMBERS.len());
+        for m in REDUX_MEMBERS {
+            match Regex::new(m) {
+                Ok(r) => compiled.push(r),
+                Err(_) => {
+                    ok = false;
+                    break;
+                }
+            }
+        }
+        let dt = t0.elapsed().as_nanos() as i128;
+        if !ok {
+            emit_row("regex-redux", "redux", n, 0, -1, -1, 0.0, -1, "REJECTED");
+            return;
+        }
+        if dt < compile_min {
+            compile_min = dt;
+        }
+    }
+
+    // --- build once for the search loop ---
+    let compiled: Vec<Regex> = REDUX_MEMBERS
+        .iter()
+        .map(|m| Regex::new(m).unwrap())
+        .collect();
+
+    let run = |cs: &[Regex]| -> usize { cs.iter().map(|r| r.find_iter(text).count()).sum() };
+
+    let total = run(&compiled); // warmup
     let probe0 = Instant::now();
-    let match_count = re.find_iter(text).count();
+    let _ = run(&compiled);
     let probe = probe0.elapsed().as_nanos().max(1);
 
     let iters = (50_000_000u128 / probe).clamp(5, 500) as usize;
     let mut samples = Vec::with_capacity(iters);
     for _ in 0..iters {
         let t0 = Instant::now();
-        let c = re.find_iter(text).count();
-        samples.push((t0.elapsed().as_nanos(), c));
+        let _ = run(&compiled);
+        samples.push(t0.elapsed().as_nanos());
     }
-    samples.sort_by_key(|&(ns, _)| ns);
-    let median = samples[iters / 2].0;
+    samples.sort_unstable();
+    let median = samples[iters / 2];
 
-    let mb = input.len() as f64 / 1_000_000.0;
+    let mb = (REDUX_MEMBERS.len() * n) as f64 / 1_000_000.0;
     let secs = median as f64 / 1_000_000_000.0;
     let throughput = if secs > 0.0 { mb / secs } else { 0.0 };
-
-    println!(
-        "rust-regex,{},{},{},{},{},{:.2},{},ok",
-        wl.id, input.len(), iters, compile_min, median, throughput, match_count
+    emit_row(
+        "regex-redux",
+        "redux",
+        n,
+        iters,
+        compile_min,
+        median as i128,
+        throughput,
+        total as i128,
+        "ok",
     );
 }
 
 fn main() {
-    let path = std::env::var("CORPUS")
-        .unwrap_or_else(|_| "corpus.txt".to_string());
-    let corpus = std::fs::read(&path)
-        .unwrap_or_else(|e| panic!("cannot read corpus {path}: {e}"));
+    let path = std::env::var("CORPUS").unwrap_or_else(|_| "corpus.txt".to_string());
+    let corpus = std::fs::read(&path).unwrap_or_else(|e| panic!("cannot read corpus {path}: {e}"));
 
-    let path_input = vec![b'a'; 50_000];
+    let synth = vec![b'a'; SYNTHETIC_LEN];
 
     for wl in WORKLOADS {
-        if wl.pathological {
-            bench_one(wl, &path_input);
-        } else {
-            for &sz in CORPUS_SIZES {
-                let n = sz.min(corpus.len());
-                bench_one(wl, &corpus[..n]);
+        match wl.kind {
+            Kind::Corpus => {
+                for &sz in CORPUS_SIZES {
+                    let n = sz.min(corpus.len());
+                    bench_one(wl, &corpus[..n]);
+                }
             }
+            Kind::Pathological => bench_one(wl, &synth),
         }
     }
+
+    bench_redux(&corpus);
 }
