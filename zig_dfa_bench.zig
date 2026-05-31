@@ -15,12 +15,14 @@
 const std = @import("std");
 const regex = @import("zeetah");
 // Phase-6 cutover renamed `ComptimeRegex` -> `Pattern` (single shared meta
-// planner) and `ComptimeOptions` -> `PatternOptions`. The old AST/VM runtime
-// fallback was deleted: a DFA-ineligible comptime pattern (lazy `.*?`,
-// lookaround, possessive, `\p{}`, backreference) is now a hard `@compileError`
-// even with `on_explosion = .runtime_fallback`, so those workloads can no
-// longer be probed here — they are excluded from this harness's set below and
-// remain covered by the runtime VM harness (`zig_bench.zig`).
+// planner) and `ComptimeOptions` -> `PatternOptions`, and replaced the
+// `on_explosion` option with `on_oversize`. The old AST/VM runtime fallback
+// was deleted: a DFA-ineligible comptime pattern (lazy `.*?`, lookaround,
+// possessive, `\p{}`, backreference) is now a hard `@compileError` that no
+// option rescues, so those workloads can no longer be probed here — they are
+// excluded from this harness's set below and remain covered by the runtime VM
+// harness (`zig_bench.zig`). For the same reason `has_dfa` is now always true
+// when the type compiles, so `benchOne`'s NO_DFA_FALLBACK branch is dead.
 const ComptimeRegex = regex.Pattern;
 
 const alloc = std.heap.c_allocator;
@@ -91,9 +93,14 @@ const workloads = [_]Workload{
 
 const corpus_sizes = [_]usize{ 1024, 8192, 32768, 262144, 1048576 };
 
-// Build-time options: a generous state budget and runtime fallback so the
-// harness never fails to build; rows note when a pattern fell back.
-const dfa_opts = regex.PatternOptions{ .max_dfa_states = 100_000, .on_explosion = .runtime_fallback };
+// Build-time options: a generous state budget, and `.allow_oversized` so a
+// DFA that builds but exceeds the budget is baked anyway rather than rejected.
+// Phase-6 renamed `on_explosion` -> `on_oversize` and deleted the
+// runtime-fallback escape hatch: a pattern that blows the fixed internal
+// construction ceiling, or uses a DFA-ineligible feature, is now a hard
+// `@compileError` no option can rescue (so the curated workload set below
+// stays restricted to comptime-buildable patterns).
+const dfa_opts = regex.PatternOptions{ .max_dfa_states = 100_000, .on_oversize = .allow_oversized };
 
 fn readFileAll(path: [*:0]const u8) ![]u8 {
     const f = std.c.fopen(path, "rb") orelse return error.OpenFailed;
