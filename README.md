@@ -2,14 +2,25 @@
 
 A standalone, reproducible benchmark harness that compares
 **[zeetah](https://github.com/zig-utils/zig-regex)** (the Zig regex engine)
-against eight other regex implementations on identical workloads and
+against twelve other regex implementations on identical workloads and
 byte-identical input.
 
 Engines compared:
 
 - **zeetah** — runtime meta-engine **and** the comptime-DFA path (`zeetah-dfa`)
 - **[mvzr](https://github.com/mnemnion/mvzr)** — a small zero-allocation Zig regex VM
-- **RE2** (Google)
+- **RE2** (Google) — C++ linear-time automaton
+- **PCRE2** — the de-facto C backtracking engine (PHP, nginx, git, ripgrep `-P`),
+  measured both **interpreted** (`pcre2`) and **JIT-compiled** (`pcre2-jit`)
+- **POSIX `regex.h`** (`posix`) — the libc baseline (`regcomp`/`regexec`; BSD impl
+  on macOS). A different regex *language* (leftmost-longest; `\d`/`\w`/`\p` are
+  extensions or literals), so it is **gate-exempt** — measured and shown, but
+  excluded from the cross-engine match-count agreement gate
+- **C++ `std::regex`** (`stdregex`) — the libc++ standard-library engine (the slow
+  default every C++ dev reaches for)
+- **[CTRE](https://github.com/hanickadot/compile-time-regular-expressions)**
+  (`ctre`) — Hana Dusíková's header-only **compile-time** C++ engine; the closest
+  conceptual peer to zeetah's comptime-DFA path
 - **Rust `regex` crate**
 - **[`fancy-regex`](https://github.com/fancy-regex/fancy-regex)** — the
   look-around/backreference/possessive Rust engine used by OpenAI's `tiktoken`
@@ -32,7 +43,8 @@ The benchmark runs in two modes.
 ./run_all.sh
 ```
 
-Builds and runs **all nine engines** (zeetah runtime + comptime-DFA, mvzr, RE2,
+Builds and runs **all fourteen engine rows** (zeetah runtime + comptime-DFA,
+mvzr, RE2, PCRE2 interpreted + JIT, POSIX `regex.h`, C++ `std::regex`, CTRE,
 Rust `regex`, `fancy-regex`, .NET, Python `re`, PyPI `regex`) against a sibling
 checkout of the engine at `../zig-regex/` (see below). Outputs (git-ignored,
 regenerated each run):
@@ -41,9 +53,10 @@ regenerated each run):
 - `results.csv` — raw rows from all engines
 - `corpus.txt` — deterministic 1 MiB corpus
 
-The script installs RE2 + pkg-config via Homebrew if missing (idempotent),
+The script installs RE2 + pkg-config + PCRE2 + CTRE via Homebrew if missing
+(idempotent; POSIX `regex.h` and `std::regex` need no package — libc / libc++),
 vendors the pinned mvzr source, sets up a local `.venv` with the PyPI `regex`
-module (idempotent), generates the corpus, builds/runs all nine harnesses, then
+module (idempotent), generates the corpus, builds/runs all harnesses, then
 aggregates.
 
 ### 2. Branch comparison — current vs target (the "PR" mode)
@@ -86,9 +99,10 @@ per-PR CI uses — see [CI](#ci).
 
 ### Prerequisites
 
-`zig` (0.16.0), `cargo`, `clang++`, `dotnet`, `python3`, plus Homebrew (for
-RE2). `run_all.sh` checks for each and exits with a clear message if one is
-missing.
+`zig` (0.16.0), `cargo`, `clang++` (C++20-capable, for CTRE), `dotnet`,
+`python3`, plus Homebrew (for RE2, PCRE2 and CTRE). `run_all.sh` checks for each
+and exits with a clear message if one is missing. POSIX `regex.h` and
+`std::regex` need no package — they ship with libc / libc++.
 
 ## zeetah source
 
@@ -130,7 +144,7 @@ cross-engine orchestrator.
   emits the per-engine tables the compiled harnesses `@import`/`#include`; the
   Python harnesses read the manifest directly through `bench_common.py`. A
   pattern is therefore declared in exactly **one** place and cannot drift across
-  the nine harnesses. The workload set spans:
+  the harnesses. The workload set spans:
   - **fundamentals:** literal, quantifier, digits, `\w+`, alternation;
   - **typical real-world:** email, URI, IPv4, HTML title/href/tag, price,
     nltk, SSN, ModSecurity SQLi, AWS ENI, Apache POST, k8s/Fluentd log,
@@ -141,13 +155,18 @@ cross-engine orchestrator.
   - **feature-heavy edge** (only the engines that support the feature run
     these — the rest emit `REJECTED`, exactly like `tokenizer`): a
     backreference duplicate-word `(\b[A-Za-z]+\b) \1`, a `(?<=\$)` look-behind
-    amount, a `\p{L}` Unicode-property class, an atomic-group `(?>…)@`;
+    amount, a `\p{L}` Unicode-property class, an atomic-group `(?>…)@`. **PCRE2**
+    (interpreted + JIT) runs all of these natively — it is the one C engine here
+    with full Perl syntax — and **CTRE** runs the backreference, look-behind and
+    atomic-group cases (it lacks the `\p{}` Unicode tables in this build);
   - **motivating:** a real GPT-4 `cl100k_base` `tokenizer` pre-tokenizer
     regex, plus a `(a+)+b` pathological case. The
   `tokenizer` row uses inline `(?i:)`, possessive `?+`/`++`, `\p{...}` and
-  `(?!\S)` look-around. **Four** engines run it and produce **identical
+  `(?!\S)` look-around. **Six** engine rows run it and produce **identical
   match counts** (gate-enforced — see below):
   - **zeetah** — natively (possessive parsed as greedy-equivalent).
+  - **PCRE2** (interpreted + JIT) — the de-facto C engine; runs the verbatim
+    pattern, possessive quantifiers and all.
   - **`fancy-regex`** — the look-around/possessive Rust engine used by
     OpenAI's `tiktoken` and BPE trainers like `rustbpe`; runs the verbatim
     pattern.
@@ -175,12 +194,23 @@ cross-engine orchestrator.
 - **Methodology:** compile and search timed in separate loops; reported value
   is the median of a loop sized to run ≥50 ms (5–500 iterations). zeetah
   uses libc for timing/IO because Zig 0.16 reworked `std.Io`/`std.time`.
+  Every engine is built optimized (`clang++ -O2`, `cargo --release`, etc.). For
+  the Zig harnesses this means **`-OReleaseFast` must precede the `-M` module
+  args** — in Zig's multi-module CLI the optimize mode applies to modules defined
+  *after* it, so placing it last silently leaves them at the Debug default
+  (zeetah/mvzr ran ~10–18× slower, with std's SIMD `memchr` falling back to
+  scalar). Verify a harness with `@import("builtin").mode`.
 - **Correctness gate:** `aggregate.py` fails if match counts disagree across
   engines for any non-`pathological` `(model, workload, input_bytes)` row. This
-  includes `tokenizer`: zeetah, `fancy-regex`, .NET and the PyPI `regex` module
-  all run it and **must agree** at every size (gate-enforced), which gates
-  zeetah's tokenizer semantics against three independent mainstream engines,
-  including the ones production BPE libraries actually use.
+  includes `tokenizer`: zeetah, PCRE2 (interp + JIT), `fancy-regex`, .NET and the
+  PyPI `regex` module all run it and **must agree** at every size (gate-enforced),
+  which gates zeetah's tokenizer semantics against four independent mainstream
+  engines, including the ones production BPE libraries actually use. One engine is
+  **gate-exempt** by declaration in `benchmarks.json` (`gate_exempt_engines`):
+  **POSIX `regex.h`**, whose leftmost-longest semantics and extension handling of
+  `\d`/`\w`/`\p` legitimately differ from the leftmost-first PCRE family — it is
+  measured and shown but never gated. PCRE2, `std::regex` and CTRE are *not*
+  exempt: they are PCRE-compatible and held to the same agreement.
 - **Input sizes:** corpus slices run up to 1 MiB; zeetah's `findAll` is a
   single linear leftmost-first NFA pass (no per-match restart).
 
@@ -236,6 +266,10 @@ Setup notes:
 | `rust/src/main.rs` | Rust base `regex` crate harness (Cargo bin `rust_bench`) |
 | `rust/src/bin/fancy_bench.rs` | Rust `fancy-regex` harness (Cargo bin `fancy_bench`; tiktoken/rustbpe engine) |
 | `re2/bench.cpp` | RE2 harness (clang++ + pkg-config) |
+| `pcre2/bench.cpp` | PCRE2 harness (clang++); emits both `pcre2` (interpreted) and `pcre2-jit` |
+| `posix/bench.cpp` | POSIX `regex.h` harness (clang++; libc baseline, gate-exempt, SIGALRM watchdog) |
+| `stdregex/bench.cpp` | C++ `std::regex` harness (clang++/libc++; SIGALRM watchdog) |
+| `ctre/bench.cpp` | CTRE compile-time-regex harness (clang++ `-std=c++20`; fork-isolated per workload) |
 | `dotnet/` | .NET `Regex` harness (default backtracking engine, 2 s timeout) |
 | `python/bench_lib.py` | shared Python harness logic (models, timing, pathological child) imported by both Python harnesses |
 | `python/bench.py` | Python stdlib `re` harness (pathological run in a 2 s child) |
