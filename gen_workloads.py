@@ -45,6 +45,7 @@ def gen_zig(engine: str, path: str) -> None:
     lines.append("    id: []const u8,")
     lines.append("    pattern: []const u8,")
     lines.append("    kind: Kind,")
+    lines.append("    logs: bool,")
     lines.append("    multiline: bool,")
     lines.append("    spans: bool,")
     lines.append("    grep: bool,")
@@ -56,7 +57,7 @@ def gen_zig(engine: str, path: str) -> None:
     for w in wls:
         lines.append(
             f"    .{{ .id = {lit(w.id)}, .pattern = {lit(w.pattern)}, "
-            f".kind = .{w.kind}, .multiline = {b(w.multiline)}, "
+            f".kind = .{w.kind}, .logs = {b(w.input == 'logs')}, .multiline = {b(w.multiline)}, "
             f".spans = {b(w.spans)}, .grep = {b(w.grep)}, "
             f".captures = {b(w.captures)}, .force_reject = {b(w.force_reject)} }},"
         )
@@ -84,6 +85,7 @@ def gen_rust(engine: str, path: str) -> None:
              "    pub id: &'static str,",
              "    pub pattern: &'static str,",
              "    pub kind: Kind,",
+             "    pub logs: bool,",
              "    pub spans: bool,",
              "    pub grep: bool,",
              "    pub captures: bool,",
@@ -94,7 +96,7 @@ def gen_rust(engine: str, path: str) -> None:
         k = "Kind::Pathological" if w.kind == "pathological" else "Kind::Corpus"
         lines.append(
             f"    Workload {{ id: {lit(w.id)}, pattern: {lit(w.pattern)}, "
-            f"kind: {k}, spans: {b(w.spans)}, grep: {b(w.grep)}, "
+            f"kind: {k}, logs: {b(w.input == 'logs')}, spans: {b(w.spans)}, grep: {b(w.grep)}, "
             f"captures: {b(w.captures)}, force_reject: {b(w.force_reject)} }},"
         )
     lines.append("];")
@@ -120,6 +122,7 @@ def gen_cpp(engine: str, path: str) -> None:
              "    const char* id;",
              "    const char* pattern;",
              "    bool pathological;",
+             "    bool logs;",
              "    bool spans;",
              "    bool grep;",
              "    bool captures;",
@@ -129,7 +132,7 @@ def gen_cpp(engine: str, path: str) -> None:
     for w in wls:
         lines.append(
             f"    {{ {lit(w.id)}, {lit(w.pattern)}, "
-            f"{b(w.kind == 'pathological')}, {b(w.spans)}, {b(w.grep)}, "
+            f"{b(w.kind == 'pathological')}, {b(w.input == 'logs')}, {b(w.spans)}, {b(w.grep)}, "
             f"{b(w.captures)}, {b(w.force_reject)} }},"
         )
     lines.append("};")
@@ -171,6 +174,7 @@ def gen_ctre(engine: str, path: str) -> None:
              "    CtreFn spans_fn;",
              "    CtreFn grep_fn;",
              "    bool pathological;",
+             "    bool logs;",
              "    bool spans;",
              "    bool grep;",
              "    bool force_reject;",
@@ -187,7 +191,7 @@ def gen_ctre(engine: str, path: str) -> None:
                    f"{('&ctre_grep<' + p + '>') if w.grep else 'nullptr'}")
         lines.append(
             f"    {{ {lit(w.id)}, {fns}, "
-            f"{path_lit}, {b(w.spans)}, {b(w.grep)}, {b(w.force_reject)} }},"
+            f"{path_lit}, {b(w.input == 'logs')}, {b(w.spans)}, {b(w.grep)}, {b(w.force_reject)} }},"
         )
     lines.append("};")
     lines.append(f"static const size_t CTRE_WORKLOADS_N = {len(wls)};")
@@ -211,6 +215,7 @@ def gen_csharp(engine: str, path: str) -> None:
              "        public string Id;",
              "        public string Pattern;",
              "        public bool Pathological;",
+             "        public bool Logs;",
              "        public bool Spans;",
              "        public bool Grep;",
              "        public bool Captures;",
@@ -220,7 +225,7 @@ def gen_csharp(engine: str, path: str) -> None:
     for w in wls:
         lines.append(
             f"        new W {{ Id = {lit(w.id)}, Pattern = {lit(w.pattern)}, "
-            f"Pathological = {b(w.kind == 'pathological')}, Spans = {b(w.spans)}, "
+            f"Pathological = {b(w.kind == 'pathological')}, Logs = {b(w.input == 'logs')}, Spans = {b(w.spans)}, "
             f"Grep = {b(w.grep)}, Captures = {b(w.captures)}, "
             f"ForceReject = {b(w.force_reject)} }},"
         )

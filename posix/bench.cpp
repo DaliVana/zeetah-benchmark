@@ -185,6 +185,14 @@ int main() {
     if (!f) { fprintf(stderr, "cannot read corpus %s\n", path.c_str()); return 1; }
     std::ostringstream ss; ss << f.rdbuf();
     std::string corpus = ss.str();
+
+    // Dense synthetic log corpus for the `input: logs` workloads; falls back to
+    // the mixed corpus if $LOGCORPUS is absent (manual single-engine runs).
+    const char* lenv = std::getenv("LOGCORPUS");
+    std::string logs;
+    { std::ifstream lf(lenv ? lenv : "logs.txt", std::ios::binary);
+      if (lf) { std::ostringstream ls; ls << lf.rdbuf(); logs = ls.str(); } else { logs = corpus; } }
+
     std::string synth(SYNTHETIC_LEN, 'a');
 
     for (size_t w = 0; w < WORKLOADS_N; w++) {
@@ -192,9 +200,10 @@ int main() {
         if (wl.pathological) {
             bench_one(wl, synth.data(), synth.size());
         } else {
+            const std::string& src = wl.logs ? logs : corpus;
             for (size_t s = 0; s < CORPUS_SIZES_N; s++) {
-                size_t n = std::min(CORPUS_SIZES[s], corpus.size());
-                bench_one(wl, corpus.data(), n);
+                size_t n = std::min(CORPUS_SIZES[s], src.size());
+                bench_one(wl, src.data(), n);
             }
         }
     }

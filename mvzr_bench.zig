@@ -235,6 +235,12 @@ pub fn main() !void {
     const corpus = try readFileAll(corpus_path);
     defer alloc.free(corpus);
 
+    // Dense synthetic log corpus for the `input: logs` workloads; falls back to
+    // the mixed corpus if $LOGCORPUS is absent (manual single-engine runs).
+    const logs_path: [*:0]const u8 = std.c.getenv("LOGCORPUS") orelse "logs.txt";
+    const logs = readFileAll(logs_path) catch try alloc.dupe(u8, corpus);
+    defer alloc.free(logs);
+
     // Single-workload child mode (BENCH_MVZR_MODE=one, BENCH_MVZR_IDX=i). idx
     // indexes the generated `workloads`; the driver only sends corpus indices
     // (the list mode skips pathological), so a backtracking crash costs one
@@ -244,9 +250,10 @@ pub fn main() !void {
         if (idx >= gen.workloads.len) return;
         const wl = gen.workloads[idx];
         if (wl.kind != .corpus) return;
+        const src = if (wl.logs) logs else corpus;
         for (gen.corpus_sizes) |sz| {
-            const n = @min(sz, corpus.len);
-            benchOne(wl, corpus[0..n]);
+            const n = @min(sz, src.len);
+            benchOne(wl, src[0..n]);
         }
         return;
     }
@@ -254,9 +261,10 @@ pub fn main() !void {
     // Default (manual) mode: run every corpus workload in-process.
     for (gen.workloads) |wl| {
         if (wl.kind != .corpus) continue;
+        const src = if (wl.logs) logs else corpus;
         for (gen.corpus_sizes) |sz| {
-            const n = @min(sz, corpus.len);
-            benchOne(wl, corpus[0..n]);
+            const n = @min(sz, src.len);
+            benchOne(wl, src[0..n]);
         }
     }
 }

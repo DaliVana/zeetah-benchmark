@@ -22,6 +22,12 @@ cd "$SCRIPT_DIR"
 CMP="."
 CORPUS="$CMP/corpus.txt"
 export CORPUS
+# Dense synthetic log corpus (every line a `timestamp level message` record),
+# fed to the structured-extraction workloads (`log_parse`, `date_fields`) that
+# carry `input: logs` in benchmarks.json. Exported so every harness — including
+# the mvzr subprocess children — reads byte-identical input.
+LOGCORPUS="$CMP/logs.txt"
+export LOGCORPUS
 
 # Where to find zeetah's source. Default: a sibling checkout of the engine
 # repo, so the benchmark measures your *uncommitted local* zeetah changes
@@ -94,6 +100,7 @@ fi
 
 echo "==> Generating deterministic corpus"
 python3 "$CMP/gen_corpus.py" "$CORPUS"
+python3 "$CMP/gen_logs.py" "$LOGCORPUS"
 
 echo "==> Generating per-engine workload sources (single source of truth)"
 # All workload patterns live in benchmarks.json; gen_workloads.py emits the

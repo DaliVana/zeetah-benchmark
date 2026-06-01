@@ -200,17 +200,26 @@ int main() {
     if (!f) { fprintf(stderr, "cannot read corpus %s\n", path.c_str()); return 1; }
     std::ostringstream ss; ss << f.rdbuf();
     std::string corpus = ss.str();
+
+    // Dense synthetic log corpus for the `input: logs` workloads; falls back to
+    // the mixed corpus if $LOGCORPUS is absent (manual single-engine runs).
+    const char* lenv = std::getenv("LOGCORPUS");
+    std::string logs;
+    { std::ifstream lf(lenv ? lenv : "logs.txt", std::ios::binary);
+      if (lf) { std::ostringstream ls; ls << lf.rdbuf(); logs = ls.str(); } else { logs = corpus; } }
+
     std::string synth(SYNTHETIC_LEN, 'a');
 
     for (size_t w = 0; w < CTRE_WORKLOADS_N; w++) {
         const CtreWorkload& wl = CTRE_WORKLOADS[w];
+        const std::string& src = wl.logs ? logs : corpus;
         if (wl.force_reject) {  // includes the pathological workload
             g_out.clear();
             if (wl.pathological) {
                 emit_row("count", wl.id, synth.size(), 0, -1, -1, 0.0, -1, "REJECTED");
             } else {
                 for (size_t s = 0; s < CORPUS_SIZES_N; s++) {
-                    size_t n = std::min(CORPUS_SIZES[s], corpus.size());
+                    size_t n = std::min(CORPUS_SIZES[s], src.size());
                     emit_row("count", wl.id, n, 0, -1, -1, 0.0, -1, "REJECTED");
                     if (wl.spans) emit_row("count-spans", wl.id, n, 0, -1, -1, 0.0, -1, "REJECTED");
                     if (wl.grep) emit_row("grep", wl.id, n, 0, -1, -1, 0.0, -1, "REJECTED");
@@ -221,8 +230,8 @@ int main() {
             continue;
         }
         for (size_t s = 0; s < CORPUS_SIZES_N; s++) {
-            size_t n = std::min(CORPUS_SIZES[s], corpus.size());
-            run_isolated(wl, corpus.data(), n);
+            size_t n = std::min(CORPUS_SIZES[s], src.size());
+            run_isolated(wl, src.data(), n);
         }
     }
     return 0;
