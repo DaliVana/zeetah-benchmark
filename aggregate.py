@@ -26,7 +26,7 @@ from collections import defaultdict
 RESULTS = sys.argv[1] if len(sys.argv) > 1 else "results.csv"
 OUT = sys.argv[2] if len(sys.argv) > 2 else "results.md"
 
-ENGINE_ORDER = ["zeetah", "zeetah-dfa", "mvzr", "re2", "pcre2", "pcre2-jit", "posix", "stdregex", "ctre", "rust-regex", "fancy-regex", "dotnet-regex", "python-re", "python-regex"]
+ENGINE_ORDER = ["zeetah", "zeetah-dfa", "mvzr", "re2", "pcre2", "pcre2-jit", "oniguruma", "posix", "stdregex", "ctre", "rust-regex", "fancy-regex", "dotnet-regex", "python-re", "python-regex"]
 MODEL_ORDER = ["count", "count-spans", "count-captures", "grep", "regex-redux"]
 
 MODEL_BLURB = {

@@ -191,12 +191,22 @@ def main(engine, mod, err, script_path):
     with open(path, "r", encoding="ascii") as f:
         corpus = f.read()
 
+    # Dense synthetic log corpus for the `input: logs` workloads; falls back to
+    # the mixed corpus if $LOGCORPUS is absent (manual single-engine runs).
+    logs_path = os.environ.get("LOGCORPUS", "logs.txt")
+    try:
+        with open(logs_path, "r", encoding="ascii") as f:
+            logs = f.read()
+    except OSError:
+        logs = corpus
+
     sizes = bc.sizes_for(engine)
     for wl in bc.workloads_for(engine):
         if wl.kind == "pathological":
             _run_pathological(engine, mod, script_path)
         else:
+            src = logs if wl.input == "logs" else corpus
             for sz in sizes:
-                n = min(sz, len(corpus))
-                _bench_one(engine, mod, err, wl, corpus[:n], n)
+                n = min(sz, len(src))
+                _bench_one(engine, mod, err, wl, src[:n], n)
     _bench_redux(engine, mod, err, corpus)

@@ -1,15 +1,15 @@
 {
-  "_doc": "Single source of truth for the cross-engine regex benchmark. Edited by hand; consumed by bench_common.py (Python harnesses read it directly) and gen_workloads.py (emits per-engine source for the compiled harnesses into gen/). The `pattern` field is the LOGICAL regex string (the exact bytes the engine's compile() must receive); bench_common applies per-engine transforms: a `(?m)` prefix for non-zeetah engines when `multiline` is set (zeetah uses a struct flag), and `engine_patterns` verbatim overrides. Defaults: kind=corpus, input=corpus, multiline=false, dfa=false, captures=false, skip_engines=[], engine_patterns={}; for corpus workloads spans=grep=true. See README.md.",
+  "_doc": "Single source of truth for the cross-engine regex benchmark. Edited by hand; consumed by bench_common.py (Python harnesses read it directly) and gen_workloads.py (emits per-engine source for the compiled harnesses into gen/). The `pattern` field is the LOGICAL regex string (the exact bytes the engine's compile() must receive); bench_common applies per-engine transforms: a `(?m)` prefix for non-zeetah engines when `multiline` is set (zeetah uses a struct flag), and `engine_patterns` verbatim overrides. Defaults: kind=corpus, input=corpus, multiline=false, dfa=false, captures=false, skip_engines=[], engine_patterns={}; for corpus workloads spans=grep=true. The `input` field selects the byte source every harness feeds the workload: `corpus` = the mixed deterministic corpus.txt; `logs` = the dense synthetic log file (logs.txt / $LOGCORPUS, every line a `timestamp level message` record) used by the structured-extraction workloads so they hit on every line; `synthetic` = the 'a'-run buffer (the pathological case). `logs`/`corpus` slice at corpus_sizes; `synthetic` uses synthetic_len. See README.md.",
 
   "corpus_sizes_std": [1024, 8192, 32768, 1048576],
   "corpus_sizes_zeetah": [1024, 8192, 32768, 262144, 1048576],
   "synthetic_len": 50000,
 
-  "engines": ["zeetah", "zeetah-dfa", "mvzr", "re2", "pcre2", "pcre2-jit", "posix", "stdregex", "ctre", "rust-regex", "fancy-regex", "dotnet-regex", "python-re", "python-regex"],
+  "engines": ["zeetah", "zeetah-dfa", "mvzr", "re2", "pcre2", "pcre2-jit", "oniguruma", "posix", "stdregex", "ctre", "rust-regex", "fancy-regex", "dotnet-regex", "python-re", "python-regex"],
 
-  "captures_engines": ["zeetah", "re2", "pcre2", "pcre2-jit", "stdregex", "rust-regex", "fancy-regex", "dotnet-regex", "python-re", "python-regex"],
+  "captures_engines": ["zeetah", "zeetah-dfa", "re2", "pcre2", "pcre2-jit", "oniguruma", "stdregex", "rust-regex", "fancy-regex", "dotnet-regex", "python-re", "python-regex"],
 
-  "redux_engines": ["zeetah", "re2", "pcre2", "pcre2-jit", "stdregex", "rust-regex", "fancy-regex", "dotnet-regex", "python-re", "python-regex"],
+  "redux_engines": ["zeetah", "re2", "pcre2", "pcre2-jit", "oniguruma", "stdregex", "rust-regex", "fancy-regex", "dotnet-regex", "python-re", "python-regex"],
 
   "_gate_exempt_doc": "Engines whose match semantics legitimately differ from the leftmost-first PCRE family (POSIX uses leftmost-LONGEST and treats \\p / \\w as extensions) — measured and shown, but excluded from the cross-engine match-count agreement gate in aggregate.py.",
   "gate_exempt_engines": ["posix"],
@@ -25,7 +25,7 @@
     "\\b(?:break|case|catch|class|const|continue|default|delete|do|else|enum|export|extends|false|finally|for|function|if|import|in|instanceof|new|null|return|super|switch|this|throw|true|try|typeof|var|void|while|with|yield|async|await|let)\\b"
   ],
 
-  "_comptime_doc": "comptime: Pattern(...) compiles via the zeetah comptime path (baked DFA, or comptime tree-backtracker for non-regular + look-assertion patterns). ALL 41 workloads now compile (look-assertions \\b/(?m)/\\Z route to the baked backtracker; deep_alternation bypasses MAX_NFA via the tree-walker; multiline_log uses Options.multiline). Drives the zeetah-comptime harness set; verified by zeetah.compilesAtComptime.",
+  "_comptime_doc": "comptime: Pattern(...) compiles via the zeetah comptime path (baked DFA, or comptime tree-backtracker for non-regular + look-assertion patterns). ALL 43 workloads now compile (look-assertions \\b/(?m)/\\Z route to the baked backtracker; deep_alternation bypasses MAX_NFA via the tree-walker; multiline_log uses Options.multiline). Drives the zeetah-comptime harness set; verified by zeetah.compilesAtComptime.",
   "workloads": [
     { "id": "literal",          "pattern": "Sherlock", "dfa": true, "comptime": true },
     { "id": "quantifier",       "pattern": "a+", "dfa": true, "comptime": true },
@@ -44,7 +44,9 @@
     { "id": "aws_eni",          "pattern": "(?:eni-.*?) ", "skip_engines": ["mvzr"], "comptime": true },
     { "id": "apache_post",      "pattern": "POST (?:/[a-zA-Z0-9_]+){1,}", "dfa": true, "comptime": true },
     { "id": "k8s_fluentd",      "pattern": "(?:\\d{4}-\\d{1,2}-\\d{1,2} \\d{1,2}:\\d{1,2}:\\d{1,2}.\\d{3})\\s+(?:[^\\s]+)\\s+(?:\\d+).*?\\[\\s+(?:.*)\\]\\s+(?:.*)\\s+:\\s+(?:.*)", "skip_engines": ["mvzr"], "comptime": true },
+    { "id": "log_parse",        "pattern": "(\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{3}) (\\w+) (.*)", "input": "logs", "captures": true, "skip_engines": ["mvzr"], "comptime": true },
     { "id": "date_iso",         "pattern": "[0-9]{4}-[0-9]{2}-[0-9]{2}", "dfa": true, "comptime": true },
+    { "id": "date_fields",      "pattern": "([0-9]{4})-([0-9]{2})-([0-9]{2})", "input": "logs", "dfa": true, "captures": true, "comptime": true },
     { "id": "time_hms",         "pattern": "[0-9]{2}:[0-9]{2}:[0-9]{2}", "dfa": true, "comptime": true },
     { "id": "phone_us",         "pattern": "\\(?[0-9]{3}\\)?[ .-][0-9]{3}[ .-][0-9]{4}", "skip_engines": ["ctre"], "comptime": true },
     { "id": "hex_color",        "pattern": "#[0-9a-fA-F]{6}", "dfa": true, "comptime": true },
@@ -63,7 +65,8 @@
     { "id": "wildcard_gaps",    "pattern": "foo.*bar.*baz", "skip_engines": ["mvzr"], "comptime": true },
     { "id": "multiline_log",    "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}.*$", "multiline": true, "skip_engines": ["mvzr"], "comptime": true,
       "engine_patterns": {
-        "stdregex": "^[0-9]{4}-[0-9]{2}-[0-9]{2}.*$"
+        "stdregex": "^[0-9]{4}-[0-9]{2}-[0-9]{2}.*$",
+        "oniguruma": "^[0-9]{4}-[0-9]{2}-[0-9]{2}.*$"
       }
     },
     { "id": "backref_word",     "pattern": "(\\b[A-Za-z]+\\b) \\1", "skip_engines": ["mvzr"], "comptime": true },

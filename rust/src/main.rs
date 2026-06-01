@@ -255,14 +255,20 @@ fn main() {
     let path = std::env::var("CORPUS").unwrap_or_else(|_| "corpus.txt".to_string());
     let corpus = std::fs::read(&path).unwrap_or_else(|e| panic!("cannot read corpus {path}: {e}"));
 
+    // Dense synthetic log corpus for the `input: logs` workloads; falls back to
+    // the mixed corpus if $LOGCORPUS is absent (manual single-engine runs).
+    let logs_path = std::env::var("LOGCORPUS").unwrap_or_else(|_| "logs.txt".to_string());
+    let logs = std::fs::read(&logs_path).unwrap_or_else(|_| corpus.clone());
+
     let synth = vec![b'a'; SYNTHETIC_LEN];
 
     for wl in WORKLOADS {
         match wl.kind {
             Kind::Corpus => {
+                let src: &[u8] = if wl.logs { &logs } else { &corpus };
                 for &sz in CORPUS_SIZES {
-                    let n = sz.min(corpus.len());
-                    bench_one(wl, &corpus[..n]);
+                    let n = sz.min(src.len());
+                    bench_one(wl, &src[..n]);
                 }
             }
             Kind::Pathological => bench_one(wl, &synth),

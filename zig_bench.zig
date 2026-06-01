@@ -304,6 +304,13 @@ pub fn main() !void {
     const corpus = try readFileAll(corpus_path);
     defer alloc.free(corpus);
 
+    // Dense synthetic log corpus for the `input: logs` workloads (every line a
+    // `timestamp level message` record). Falls back to a copy of the mixed
+    // corpus if $LOGCORPUS is absent, so a manual single-engine run still works.
+    const logs_path: [*:0]const u8 = std.c.getenv("LOGCORPUS") orelse "logs.txt";
+    const logs = readFileAll(logs_path) catch try alloc.dupe(u8, corpus);
+    defer alloc.free(logs);
+
     const synth = try alloc.alloc(u8, gen.synthetic_len);
     defer alloc.free(synth);
     @memset(synth, 'a');
@@ -311,9 +318,10 @@ pub fn main() !void {
     for (gen.workloads) |wl| {
         switch (wl.kind) {
             .corpus => {
+                const src = if (wl.logs) logs else corpus;
                 for (gen.corpus_sizes) |sz| {
-                    const n = @min(sz, corpus.len);
-                    benchOne(wl, corpus[0..n]);
+                    const n = @min(sz, src.len);
+                    benchOne(wl, src[0..n]);
                 }
             },
             .pathological => benchOne(wl, synth),

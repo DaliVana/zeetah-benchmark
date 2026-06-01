@@ -49,9 +49,13 @@ CAND_SRC="$ZEETAH_DIR/src/root.zig"
 
 CORPUS="./corpus.txt"
 export CORPUS
+# Dense synthetic log corpus for the structured-extraction workloads (see run_all.sh).
+LOGCORPUS="./logs.txt"
+export LOGCORPUS
 
 echo "==> Generating deterministic corpus"
 python3 gen_corpus.py "$CORPUS"
+python3 gen_logs.py "$LOGCORPUS"
 echo "==> Generating per-engine workload sources"
 python3 gen_workloads.py
 

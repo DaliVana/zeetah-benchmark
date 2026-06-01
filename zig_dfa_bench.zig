@@ -100,6 +100,23 @@ fn mGrep(comptime C: type, input: []const u8) usize {
     return n;
 }
 
+/// count-captures: participating capture groups summed over all matches, group 0
+/// excluded (same definition as the runtime `zig_bench.mCaptures`). This is the
+/// showcase of the comptime **zero-allocation** capture API: it streams matches
+/// via `capturesIterator` and reads groups out of the inline `Captures` value —
+/// NO allocator at all (the runtime path heap-allocates a `[]?Group` per match).
+/// `Captures.group_count` is comptime-known, so the inner loop unrolls.
+fn mCaptures(comptime C: type, input: []const u8) usize {
+    var total: usize = 0;
+    var it = C.capturesIterator(input);
+    while (it.next()) |c| {
+        inline for (1..C.Captures.group_count + 1) |g| {
+            if (c.get(g) != null) total += 1;
+        }
+    }
+    return total;
+}
+
 fn measure(
     comptime C: type,
     comptime f: anytype,
@@ -138,12 +155,21 @@ fn benchOne(comptime C: type, comptime wl: gen.Workload, input: []const u8) void
     measure(C, mCount, "count", wl.id, input);
     if (wl.spans) measure(C, mSpans, "count-spans", wl.id, input);
     if (wl.grep) measure(C, mGrep, "grep", wl.id, input);
+    // count-captures via the zero-alloc comptime capture API (see `mCaptures`).
+    if (wl.captures) measure(C, mCaptures, "count-captures", wl.id, input);
 }
 
 pub fn main() !void {
     const corpus_path: [*:0]const u8 = std.c.getenv("CORPUS") orelse "corpus.txt";
     const corpus = try readFileAll(corpus_path);
     defer alloc.free(corpus);
+
+    // Dense synthetic log corpus for the `input: logs` workloads (every line a
+    // `timestamp level message` record); falls back to the mixed corpus if
+    // $LOGCORPUS is absent (manual single-engine runs).
+    const logs_path: [*:0]const u8 = std.c.getenv("LOGCORPUS") orelse "logs.txt";
+    const logs = readFileAll(logs_path) catch try alloc.dupe(u8, corpus);
+    defer alloc.free(logs);
 
     const synth = try alloc.alloc(u8, gen.synthetic_len);
     defer alloc.free(synth);
@@ -161,9 +187,10 @@ pub fn main() !void {
         const C = ComptimeRegex(wl.pattern, opts);
         switch (wl.kind) {
             .corpus => {
+                const src = if (wl.logs) logs else corpus;
                 inline for (gen.corpus_sizes) |sz| {
-                    const n = @min(sz, corpus.len);
-                    benchOne(C, wl, corpus[0..n]);
+                    const n = @min(sz, src.len);
+                    benchOne(C, wl, src[0..n]);
                 }
             },
             .pathological => benchOne(C, wl, synth),

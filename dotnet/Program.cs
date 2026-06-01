@@ -260,6 +260,12 @@ internal static class Program
             return 1;
         }
         string corpus = File.ReadAllText(path);
+
+        // Dense synthetic log corpus for the `input: logs` workloads; falls back
+        // to the mixed corpus if $LOGCORPUS is absent (manual single-engine runs).
+        string logsPath = Environment.GetEnvironmentVariable("LOGCORPUS") ?? "logs.txt";
+        string logs = File.Exists(logsPath) ? File.ReadAllText(logsPath) : corpus;
+
         string pathInput = new string('a', Workloads.SyntheticLen);
 
         foreach (ref readonly var wl in Workloads.All.AsSpan())
@@ -270,10 +276,11 @@ internal static class Program
             }
             else
             {
+                string src = wl.Logs ? logs : corpus;
                 foreach (int sz in Workloads.CorpusSizes)
                 {
-                    int nn = Math.Min(sz, corpus.Length);
-                    BenchOne(wl, corpus.Substring(0, nn), nn);
+                    int nn = Math.Min(sz, src.Length);
+                    BenchOne(wl, src.Substring(0, nn), nn);
                 }
             }
         }
