@@ -25,9 +25,6 @@ const gen = @import("gen/workloads_zeetah_dfa.zig");
 const ComptimeRegex = regex.Pattern;
 const alloc = std.heap.c_allocator;
 
-// Build-time options: a generous state budget; `.allow_oversized` bakes a DFA
-// that builds but exceeds the budget rather than rejecting it.
-const dfa_opts = regex.PatternOptions{ .max_dfa_states = 100_000, .on_oversize = .allow_oversized };
 
 fn nowNs() u64 {
     var ts: std.c.timespec = undefined;
@@ -153,7 +150,15 @@ pub fn main() !void {
     @memset(synth, 'a');
 
     inline for (gen.workloads) |wl| {
-        const C = ComptimeRegex(wl.pattern, dfa_opts);
+        // Per-workload opts: thread `multiline` (the `^`/`$`-as-line-anchor flag
+        // the manifest carries as a struct field, like the runtime; e.g.
+        // `multiline_log`). All other opts are the shared generous-DFA defaults.
+        const opts = regex.PatternOptions{
+            .max_dfa_states = 100_000,
+            .on_oversize = .allow_oversized,
+            .multiline = wl.multiline,
+        };
+        const C = ComptimeRegex(wl.pattern, opts);
         switch (wl.kind) {
             .corpus => {
                 inline for (gen.corpus_sizes) |sz| {

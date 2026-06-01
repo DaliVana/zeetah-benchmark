@@ -71,7 +71,7 @@ def _validate(m: dict) -> None:
             raise ValueError(f"duplicate workload id: {w['id']}")
         seen.add(w["id"])
         bad = set(w) - {
-            "id", "pattern", "kind", "input", "multiline", "dfa",
+            "id", "pattern", "kind", "input", "multiline", "dfa", "comptime",
             "spans", "grep", "captures", "skip_engines", "engine_patterns",
             "count_overrides",
         }
@@ -121,15 +121,20 @@ def _resolve_pattern(w: dict, engine: str) -> str:
 
 
 def workloads_for(engine: str) -> List[ResolvedWorkload]:
-    """Resolved, per-engine workload list. For zeetah-dfa this is the
-    `dfa: true` subset; for every other engine it is the full set (engines
-    that cannot express a feature emit REJECTED at runtime via their compiler;
-    `skip_engines` covers engines that mis-parse instead of erroring)."""
+    """Resolved, per-engine workload list. For zeetah-dfa (the zeetah *comptime*
+    harness) this is the `comptime: true` subset — every pattern `Pattern(...)`
+    compiles, whether it bakes a DFA or routes to the comptime tree-backtracker
+    (backref/lookaround/atomic). It was historically the narrower `dfa: true`
+    set; the comptime-backtracker work widened it to 38/41 (the 3 omissions —
+    backref_word/multiline_log/deep_alternation — carry `comptime: false`,
+    verified by `zeetah.compilesAtComptime`). For every other engine it is the
+    full set (engines that cannot express a feature emit REJECTED at runtime via
+    their compiler; `skip_engines` covers engines that mis-parse vs erroring)."""
     m = manifest()
     cap_ok = engine in m["captures_engines"]
     out: List[ResolvedWorkload] = []
     for w in m["workloads"]:
-        if engine == "zeetah-dfa" and not w.get("dfa", False):
+        if engine == "zeetah-dfa" and not w.get("comptime", False):
             continue
         kind = w.get("kind", "corpus")
         corpus = kind == "corpus"
