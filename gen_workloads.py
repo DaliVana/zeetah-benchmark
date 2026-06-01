@@ -260,6 +260,9 @@ def main() -> None:
     # C/C++ data tables consumed by clang++ harnesses (POSIX regex.h is C but
     # the harness is compiled as C++ so the shared gen_cpp emitter is reused).
     gen_cpp("pcre2", os.path.join(GEN, "workloads_pcre2.hpp"))
+    # oniguruma: Ruby/Perl-syntax C backtracker (the engine behind Ruby, PHP
+    # mbstring, TextMate/Atom grammars). Plain runtime data table like pcre2.
+    gen_cpp("oniguruma", os.path.join(GEN, "workloads_oniguruma.hpp"))
     gen_cpp("posix", os.path.join(GEN, "workloads_posix.hpp"))
     gen_cpp("stdregex", os.path.join(GEN, "workloads_stdregex.hpp"))
     gen_ctre("ctre", os.path.join(GEN, "workloads_ctre.hpp"))

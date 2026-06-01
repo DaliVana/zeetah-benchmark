@@ -12,6 +12,7 @@ compare.md
 /mvzr_bench
 /re2/re2_bench
 /pcre2/pcre2_bench
+/oniguruma/oniguruma_bench
 /posix/posix_bench
 /stdregex/stdregex_bench
 /ctre/ctre_bench

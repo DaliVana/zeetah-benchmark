@@ -2,9 +2,9 @@
 # Cross-engine regex benchmark orchestrator.
 #
 # Builds and runs the zeetah (runtime VM + comptime DFA), mvzr, RE2, PCRE2
-# (interpreted + JIT), POSIX regex.h, C++ std::regex, CTRE, Rust `regex`, Rust
-# `fancy-regex`, .NET, Python stdlib `re` and Python PyPI `regex`-module
-# harnesses against a shared deterministic corpus, concatenates their CSV
+# (interpreted + JIT), Oniguruma, POSIX regex.h, C++ std::regex, CTRE, Rust
+# `regex`, Rust `fancy-regex`, .NET, Python stdlib `re` and Python PyPI
+# `regex`-module harnesses against a shared deterministic corpus, concatenates their CSV
 # output, then runs the aggregator (which also enforces the cross-engine
 # correctness gate).
 #
@@ -78,6 +78,14 @@ PCRE2_CXXFLAGS="-I$PCRE2_PREFIX/include"
 PCRE2_LIBS="-L$PCRE2_PREFIX/lib -lpcre2-8"
 CTRE_CXXFLAGS="-I$(brew --prefix ctre)/include"
 
+echo "==> Ensuring Oniguruma (Homebrew, idempotent)"
+# Oniguruma: the C backtracking engine behind Ruby / PHP mbstring / many editor
+# grammars. Not keg-only, so brew --prefix resolves include/lib directly.
+brew list oniguruma >/dev/null 2>&1 || brew install oniguruma
+ONIG_PREFIX="$(brew --prefix oniguruma)"
+ONIG_CXXFLAGS="-I$ONIG_PREFIX/include"
+ONIG_LIBS="-L$ONIG_PREFIX/lib -lonig"
+
 echo "==> Ensuring mvzr source (vendored, idempotent)"
 MVZR_VER="v0.3.10"
 MVZR_DIR="$CMP/mvzr"
@@ -109,7 +117,7 @@ echo "==> Generating per-engine workload sources (single source of truth)"
 # the git-ignored gen/ dir before any harness is built.
 python3 "$CMP/gen_workloads.py"
 
-echo "==> [1/13] zeetah harness"
+echo "==> [1/14] zeetah harness"
 # Compiled directly (no build.zig step) so the benchmark stays fully
 # self-contained and the zeetah source tree is untouched. The zeetah module
 # is pulled from $ZEETAH_SRC (sibling checkout by default; CI overrides it).
@@ -124,7 +132,7 @@ zig build-exe -OReleaseFast \
     -femit-bin="$CMP/bench_compare"
 "$CMP/bench_compare" > "$CMP/zig.csv"
 
-echo "==> [2/13] zeetah comptime-DFA harness"
+echo "==> [2/14] zeetah comptime-DFA harness"
 # Same workloads/corpus as the runtime harness, but every pattern is baked
 # into a minimized DFA at build time (ComptimeRegex). Emits engine "zeetah-dfa";
 # DFA-ineligible patterns surface as NO_DFA_FALLBACK rows, which the
@@ -143,7 +151,7 @@ else
     : > "$CMP/zig_dfa.csv"
 fi
 
-echo "==> [3/13] mvzr harness"
+echo "==> [3/14] mvzr harness"
 zig build-exe -OReleaseFast \
     --dep mvzr -Mroot="$CMP/mvzr_bench.zig" -Mmvzr="$MVZR_DIR/src/mvzr.zig" \
     -lc --name mvzr_bench --cache-dir "$BENCH_CACHE" \
@@ -195,15 +203,15 @@ except subprocess.TimeoutExpired:
     print(f"mvzr,count,pathological,{N},0,-1,-1,0.00,-1,TIMEOUT")
 PY
 
-echo "==> [4/13] Rust regex harness"
+echo "==> [4/14] Rust regex harness"
 # One build produces both the base-`regex` and `fancy-regex` binaries.
 cargo build --release --manifest-path "$CMP/rust/Cargo.toml" >/dev/null 2>&1
 "$CMP/rust/target/release/rust_bench" > "$CMP/rust.csv"
 
-echo "==> [5/13] Rust fancy-regex harness (look-around/possessive; tiktoken/rustbpe engine)"
+echo "==> [5/14] Rust fancy-regex harness (look-around/possessive; tiktoken/rustbpe engine)"
 "$CMP/rust/target/release/fancy_bench" > "$CMP/fancy.csv"
 
-echo "==> [6/13] RE2 harness"
+echo "==> [6/14] RE2 harness"
 RE2_CXXFLAGS="$(pkg-config --cflags re2)"
 RE2_LIBS="$(pkg-config --libs re2)"
 # shellcheck disable=SC2086
@@ -211,41 +219,47 @@ clang++ -std=c++17 -O2 -o "$CMP/re2/re2_bench" "$CMP/re2/bench.cpp" \
     $RE2_CXXFLAGS $RE2_LIBS
 "$CMP/re2/re2_bench" > "$CMP/re2.csv"
 
-echo "==> [7/13] PCRE2 harness (interpreted + JIT; emits pcre2 and pcre2-jit)"
+echo "==> [7/14] PCRE2 harness (interpreted + JIT; emits pcre2 and pcre2-jit)"
 # shellcheck disable=SC2086
 clang++ -std=c++17 -O2 -o "$CMP/pcre2/pcre2_bench" "$CMP/pcre2/bench.cpp" \
     $PCRE2_CXXFLAGS $PCRE2_LIBS
 "$CMP/pcre2/pcre2_bench" > "$CMP/pcre2.csv"
 
-echo "==> [8/13] POSIX regex.h harness (libc baseline; gate-exempt)"
+echo "==> [8/14] Oniguruma harness (Ruby/Perl-syntax C backtracker)"
+# shellcheck disable=SC2086
+clang++ -std=c++17 -O2 -o "$CMP/oniguruma/oniguruma_bench" "$CMP/oniguruma/bench.cpp" \
+    $ONIG_CXXFLAGS $ONIG_LIBS
+"$CMP/oniguruma/oniguruma_bench" > "$CMP/oniguruma.csv"
+
+echo "==> [9/14] POSIX regex.h harness (libc baseline; gate-exempt)"
 clang++ -std=c++17 -O2 -o "$CMP/posix/posix_bench" "$CMP/posix/bench.cpp"
 "$CMP/posix/posix_bench" > "$CMP/posix.csv"
 
-echo "==> [9/13] C++ std::regex harness (libc++)"
+echo "==> [10/14] C++ std::regex harness (libc++)"
 clang++ -std=c++17 -O2 -o "$CMP/stdregex/stdregex_bench" "$CMP/stdregex/bench.cpp"
 "$CMP/stdregex/stdregex_bench" > "$CMP/stdregex.csv"
 
-echo "==> [10/13] CTRE harness (compile-time regex; many template instantiations)"
+echo "==> [11/14] CTRE harness (compile-time regex; many template instantiations)"
 # shellcheck disable=SC2086
 clang++ -std=c++20 -O2 -Wno-deprecated-declarations $CTRE_CXXFLAGS \
     -o "$CMP/ctre/ctre_bench" "$CMP/ctre/bench.cpp"
 "$CMP/ctre/ctre_bench" > "$CMP/ctre.csv"
 
-echo "==> [11/13] .NET regex harness"
+echo "==> [12/14] .NET regex harness"
 dotnet build -c Release "$CMP/dotnet/Bench.csproj" >/dev/null
 dotnet "$CMP/dotnet/bin/Release/net10.0/dotnet_bench.dll" > "$CMP/dotnet.csv"
 
-echo "==> [12/13] Python stdlib re harness"
+echo "==> [13/14] Python stdlib re harness"
 python3 "$CMP/python/bench.py" > "$CMP/python.csv"
 
-echo "==> [13/13] Python regex-module harness (PyPI 'regex'; tokenizer-grade Unicode)"
+echo "==> [14/14] Python regex-module harness (PyPI 'regex'; tokenizer-grade Unicode)"
 "$VENV_PY" "$CMP/python/bench_regex.py" > "$CMP/python_regex.csv"
 
 echo "==> Aggregating"
 {
     echo "engine,model,workload,input_bytes,iterations,compile_ns,search_ns_per_op,throughput_mb_s,match_count,note"
     cat "$CMP/zig.csv" "$CMP/zig_dfa.csv" "$CMP/mvzr.csv" "$CMP/re2.csv" \
-        "$CMP/pcre2.csv" "$CMP/posix.csv" "$CMP/stdregex.csv" "$CMP/ctre.csv" \
+        "$CMP/pcre2.csv" "$CMP/oniguruma.csv" "$CMP/posix.csv" "$CMP/stdregex.csv" "$CMP/ctre.csv" \
         "$CMP/rust.csv" "$CMP/fancy.csv" "$CMP/dotnet.csv" "$CMP/python.csv" "$CMP/python_regex.csv"
 } > "$CMP/results.csv"
 

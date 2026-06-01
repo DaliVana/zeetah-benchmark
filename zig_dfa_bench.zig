@@ -100,6 +100,23 @@ fn mGrep(comptime C: type, input: []const u8) usize {
     return n;
 }
 
+/// count-captures: participating capture groups summed over all matches, group 0
+/// excluded (same definition as the runtime `zig_bench.mCaptures`). This is the
+/// showcase of the comptime **zero-allocation** capture API: it streams matches
+/// via `capturesIterator` and reads groups out of the inline `Captures` value —
+/// NO allocator at all (the runtime path heap-allocates a `[]?Group` per match).
+/// `Captures.group_count` is comptime-known, so the inner loop unrolls.
+fn mCaptures(comptime C: type, input: []const u8) usize {
+    var total: usize = 0;
+    var it = C.capturesIterator(input);
+    while (it.next()) |c| {
+        inline for (1..C.Captures.group_count + 1) |g| {
+            if (c.get(g) != null) total += 1;
+        }
+    }
+    return total;
+}
+
 fn measure(
     comptime C: type,
     comptime f: anytype,
@@ -138,6 +155,8 @@ fn benchOne(comptime C: type, comptime wl: gen.Workload, input: []const u8) void
     measure(C, mCount, "count", wl.id, input);
     if (wl.spans) measure(C, mSpans, "count-spans", wl.id, input);
     if (wl.grep) measure(C, mGrep, "grep", wl.id, input);
+    // count-captures via the zero-alloc comptime capture API (see `mCaptures`).
+    if (wl.captures) measure(C, mCaptures, "count-captures", wl.id, input);
 }
 
 pub fn main() !void {
