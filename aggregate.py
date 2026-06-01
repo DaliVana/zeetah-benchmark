@@ -26,7 +26,7 @@ from collections import defaultdict
 RESULTS = sys.argv[1] if len(sys.argv) > 1 else "results.csv"
 OUT = sys.argv[2] if len(sys.argv) > 2 else "results.md"
 
-ENGINE_ORDER = ["zeetah", "zeetah-dfa", "mvzr", "re2", "rust-regex", "fancy-regex", "dotnet-regex", "python-re", "python-regex"]
+ENGINE_ORDER = ["zeetah", "zeetah-dfa", "mvzr", "re2", "pcre2", "pcre2-jit", "posix", "stdregex", "ctre", "rust-regex", "fancy-regex", "dotnet-regex", "python-re", "python-regex"]
 MODEL_ORDER = ["count", "count-spans", "count-captures", "grep", "regex-redux"]
 
 MODEL_BLURB = {
@@ -52,6 +52,18 @@ def load_overrides():
     except Exception:
         pass
     return out
+
+
+def load_gate_exempt():
+    """Engines excluded from the cross-engine match-count agreement gate
+    because their match semantics legitimately differ from the leftmost-first
+    PCRE family (e.g. POSIX leftmost-longest). Still measured and shown."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "benchmarks.json")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return set(json.load(f).get("gate_exempt_engines", []))
+    except Exception:
+        return set()
 
 
 def fmt_ns(ns):
@@ -81,6 +93,7 @@ def main():
             rows.append(r)
 
     overrides = load_overrides()
+    gate_exempt = load_gate_exempt()
 
     # group: (model, workload, input_bytes) -> engine -> row
     groups = defaultdict(dict)
@@ -106,6 +119,8 @@ def main():
         agree = {}
         for e, row in per_engine.items():
             if row["note"] != "ok":
+                continue
+            if e in gate_exempt:  # semantically divergent: shown, never gated
                 continue
             c = int(row["match_count"])
             if e in wl_ov:

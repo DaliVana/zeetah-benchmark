@@ -147,6 +147,58 @@ def gen_cpp(engine: str, path: str) -> None:
     _write(path, "\n".join(lines))
 
 
+# --- CTRE (compile-time regex) ----------------------------------------------
+#
+# CTRE is unique: the pattern is a TEMPLATE PARAMETER, not runtime data, so a
+# pattern CTRE cannot compile is a hard *build* error rather than a runtime
+# rejection. The set of unsupported patterns is therefore resolved ahead of
+# time via `skip_engines: ["ctre"]` in benchmarks.json (see the probe in the
+# session that added this engine), and we emit a function-pointer table:
+# supported workloads point at `ctre_count<"pat">` / `ctre_spans<…>` /
+# `ctre_grep<…>` instantiations (the templates live in ctre_bench.cpp); skipped
+# ones carry null pointers + reject=true so the harness emits a REJECTED row
+# without ever instantiating the matcher. CTRE runs only count/spans/grep — no
+# captures or regex-redux (it is absent from those capability lists).
+
+def gen_ctre(engine: str, path: str) -> None:
+    wls = bc.workloads_for(engine)
+    lines = [AUTO, "", "#pragma once", "#include <cstddef>", "#include <string_view>", "",
+             "// Provided by ctre_bench.cpp before this header is included.",
+             "using CtreFn = size_t (*)(std::string_view);", "",
+             "struct CtreWorkload {",
+             "    const char* id;",
+             "    CtreFn count_fn;",
+             "    CtreFn spans_fn;",
+             "    CtreFn grep_fn;",
+             "    bool pathological;",
+             "    bool spans;",
+             "    bool grep;",
+             "    bool force_reject;",
+             "};", "",
+             "static const CtreWorkload CTRE_WORKLOADS[] = {"]
+    for w in wls:
+        path_lit = "true" if w.kind == "pathological" else "false"
+        if w.force_reject:
+            fns = "nullptr, nullptr, nullptr"
+        else:
+            p = lit(w.pattern)
+            fns = (f"&ctre_count<{p}>, "
+                   f"{('&ctre_spans<' + p + '>') if w.spans else 'nullptr'}, "
+                   f"{('&ctre_grep<' + p + '>') if w.grep else 'nullptr'}")
+        lines.append(
+            f"    {{ {lit(w.id)}, {fns}, "
+            f"{path_lit}, {b(w.spans)}, {b(w.grep)}, {b(w.force_reject)} }},"
+        )
+    lines.append("};")
+    lines.append(f"static const size_t CTRE_WORKLOADS_N = {len(wls)};")
+    szs = ", ".join(str(s) for s in bc.sizes_for(engine))
+    lines.append(f"static const size_t CORPUS_SIZES[] = {{{szs}}};")
+    lines.append(f"static const size_t CORPUS_SIZES_N = {len(bc.sizes_for(engine))};")
+    lines.append(f"static const size_t SYNTHETIC_LEN = {bc.synthetic_len()};")
+    lines.append("")
+    _write(path, "\n".join(lines))
+
+
 # --- C# (.NET) --------------------------------------------------------------
 
 def gen_csharp(engine: str, path: str) -> None:
@@ -198,6 +250,14 @@ def main() -> None:
     # rust-regex and fancy-regex resolve to identical tables; emit once.
     gen_rust("rust-regex", os.path.join(GEN, "workloads_rust.rs"))
     gen_cpp("re2", os.path.join(GEN, "workloads_re2.hpp"))
+    # pcre2 (interpreted) and pcre2-jit resolve to identical tables; emit once,
+    # the single pcre2_bench.cpp drives both. posix and stdregex are also plain
+    # C/C++ data tables consumed by clang++ harnesses (POSIX regex.h is C but
+    # the harness is compiled as C++ so the shared gen_cpp emitter is reused).
+    gen_cpp("pcre2", os.path.join(GEN, "workloads_pcre2.hpp"))
+    gen_cpp("posix", os.path.join(GEN, "workloads_posix.hpp"))
+    gen_cpp("stdregex", os.path.join(GEN, "workloads_stdregex.hpp"))
+    gen_ctre("ctre", os.path.join(GEN, "workloads_ctre.hpp"))
     gen_csharp("dotnet-regex", os.path.join(GEN, "workloads_dotnet.cs"))
     print(f"generated workload sources in {GEN}")
 

@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Cross-engine regex benchmark orchestrator.
 #
-# Builds and runs the zeetah (runtime VM + comptime DFA), mvzr, Rust
-# `regex`, Rust `fancy-regex`, RE2, .NET, Python stdlib `re` and Python PyPI
-# `regex`-module harnesses against a shared deterministic corpus, concatenates
-# their CSV output, then runs the aggregator (which also enforces the
-# cross-engine correctness gate).
+# Builds and runs the zeetah (runtime VM + comptime DFA), mvzr, RE2, PCRE2
+# (interpreted + JIT), POSIX regex.h, C++ std::regex, CTRE, Rust `regex`, Rust
+# `fancy-regex`, .NET, Python stdlib `re` and Python PyPI `regex`-module
+# harnesses against a shared deterministic corpus, concatenates their CSV
+# output, then runs the aggregator (which also enforces the cross-engine
+# correctness gate).
 #
 # This is a standalone repository: every path below is relative to this
 # script's directory (the repo root). The zeetah engine source is NOT vendored
@@ -59,6 +60,18 @@ brew list re2 >/dev/null 2>&1 || brew install re2
 # Homebrew keg-only deps: make their .pc files discoverable.
 export PKG_CONFIG_PATH="$(brew --prefix re2)/lib/pkgconfig:$(brew --prefix abseil)/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
 
+echo "==> Ensuring PCRE2 + CTRE (Homebrew, idempotent)"
+# PCRE2: the de-facto C backtracking engine (interpreted + JIT). CTRE: the
+# header-only compile-time C++ engine. POSIX regex.h and std::regex need no
+# package (libc / libc++). Resolve include/lib dirs from the brew prefixes so
+# the clang++ harnesses below find them without touching system paths.
+brew list pcre2 >/dev/null 2>&1 || brew install pcre2
+brew list ctre  >/dev/null 2>&1 || brew install ctre
+PCRE2_PREFIX="$(brew --prefix pcre2)"
+PCRE2_CXXFLAGS="-I$PCRE2_PREFIX/include"
+PCRE2_LIBS="-L$PCRE2_PREFIX/lib -lpcre2-8"
+CTRE_CXXFLAGS="-I$(brew --prefix ctre)/include"
+
 echo "==> Ensuring mvzr source (vendored, idempotent)"
 MVZR_VER="v0.3.10"
 MVZR_DIR="$CMP/mvzr"
@@ -89,17 +102,22 @@ echo "==> Generating per-engine workload sources (single source of truth)"
 # the git-ignored gen/ dir before any harness is built.
 python3 "$CMP/gen_workloads.py"
 
-echo "==> [1/9] zeetah harness"
+echo "==> [1/13] zeetah harness"
 # Compiled directly (no build.zig step) so the benchmark stays fully
 # self-contained and the zeetah source tree is untouched. The zeetah module
 # is pulled from $ZEETAH_SRC (sibling checkout by default; CI overrides it).
-zig build-exe \
+# NOTE: -OReleaseFast MUST precede the `-M` module args. In Zig's multi-module
+# CLI, the optimize mode is a per-module setting applied to the modules defined
+# *after* it; placed at the end it silently leaves every module at the Debug
+# default — which made zeetah/mvzr ~10-18x slower (memchr/SIMD unoptimized) and
+# is NOT a fair measurement. Verified via `@import("builtin").mode`.
+zig build-exe -OReleaseFast \
     --dep zeetah -Mroot="$CMP/zig_bench.zig" -Mzeetah="$ZEETAH_SRC" \
-    -lc -OReleaseFast --name bench_compare --cache-dir "$BENCH_CACHE" \
+    -lc --name bench_compare --cache-dir "$BENCH_CACHE" \
     -femit-bin="$CMP/bench_compare"
 "$CMP/bench_compare" > "$CMP/zig.csv"
 
-echo "==> [2/9] zeetah comptime-DFA harness"
+echo "==> [2/13] zeetah comptime-DFA harness"
 # Same workloads/corpus as the runtime harness, but every pattern is baked
 # into a minimized DFA at build time (ComptimeRegex). Emits engine "zeetah-dfa";
 # DFA-ineligible patterns surface as NO_DFA_FALLBACK rows, which the
@@ -108,9 +126,9 @@ echo "==> [2/9] zeetah comptime-DFA harness"
 # (no runtime fallback). Failing this one supplementary harness must NOT abort
 # the whole cross-engine comparison — emit an empty CSV and a loud warning so
 # the aggregator simply omits the zeetah-dfa engine instead of the run dying here.
-if zig build-exe \
+if zig build-exe -OReleaseFast \
     --dep zeetah -Mroot="$CMP/zig_dfa_bench.zig" -Mzeetah="$ZEETAH_SRC" \
-    -lc -OReleaseFast --name zig_dfa_bench --cache-dir "$BENCH_CACHE" \
+    -lc --name zig_dfa_bench --cache-dir "$BENCH_CACHE" \
     -femit-bin="$CMP/zig_dfa_bench"; then
     "$CMP/zig_dfa_bench" > "$CMP/zig_dfa.csv"
 else
@@ -118,10 +136,10 @@ else
     : > "$CMP/zig_dfa.csv"
 fi
 
-echo "==> [3/9] mvzr harness"
-zig build-exe \
+echo "==> [3/13] mvzr harness"
+zig build-exe -OReleaseFast \
     --dep mvzr -Mroot="$CMP/mvzr_bench.zig" -Mmvzr="$MVZR_DIR/src/mvzr.zig" \
-    -lc -OReleaseFast --name mvzr_bench --cache-dir "$BENCH_CACHE" \
+    -lc --name mvzr_bench --cache-dir "$BENCH_CACHE" \
     -femit-bin="$CMP/mvzr_bench"
 # mvzr is a third-party backtracking VM: some patterns it accepts at compile
 # time still panic at *match* time (integer overflow on deep backtracking).
@@ -170,15 +188,15 @@ except subprocess.TimeoutExpired:
     print(f"mvzr,count,pathological,{N},0,-1,-1,0.00,-1,TIMEOUT")
 PY
 
-echo "==> [4/9] Rust regex harness"
+echo "==> [4/13] Rust regex harness"
 # One build produces both the base-`regex` and `fancy-regex` binaries.
 cargo build --release --manifest-path "$CMP/rust/Cargo.toml" >/dev/null 2>&1
 "$CMP/rust/target/release/rust_bench" > "$CMP/rust.csv"
 
-echo "==> [5/9] Rust fancy-regex harness (look-around/possessive; tiktoken/rustbpe engine)"
+echo "==> [5/13] Rust fancy-regex harness (look-around/possessive; tiktoken/rustbpe engine)"
 "$CMP/rust/target/release/fancy_bench" > "$CMP/fancy.csv"
 
-echo "==> [6/9] RE2 harness"
+echo "==> [6/13] RE2 harness"
 RE2_CXXFLAGS="$(pkg-config --cflags re2)"
 RE2_LIBS="$(pkg-config --libs re2)"
 # shellcheck disable=SC2086
@@ -186,20 +204,42 @@ clang++ -std=c++17 -O2 -o "$CMP/re2/re2_bench" "$CMP/re2/bench.cpp" \
     $RE2_CXXFLAGS $RE2_LIBS
 "$CMP/re2/re2_bench" > "$CMP/re2.csv"
 
-echo "==> [7/9] .NET regex harness"
+echo "==> [7/13] PCRE2 harness (interpreted + JIT; emits pcre2 and pcre2-jit)"
+# shellcheck disable=SC2086
+clang++ -std=c++17 -O2 -o "$CMP/pcre2/pcre2_bench" "$CMP/pcre2/bench.cpp" \
+    $PCRE2_CXXFLAGS $PCRE2_LIBS
+"$CMP/pcre2/pcre2_bench" > "$CMP/pcre2.csv"
+
+echo "==> [8/13] POSIX regex.h harness (libc baseline; gate-exempt)"
+clang++ -std=c++17 -O2 -o "$CMP/posix/posix_bench" "$CMP/posix/bench.cpp"
+"$CMP/posix/posix_bench" > "$CMP/posix.csv"
+
+echo "==> [9/13] C++ std::regex harness (libc++)"
+clang++ -std=c++17 -O2 -o "$CMP/stdregex/stdregex_bench" "$CMP/stdregex/bench.cpp"
+"$CMP/stdregex/stdregex_bench" > "$CMP/stdregex.csv"
+
+echo "==> [10/13] CTRE harness (compile-time regex; many template instantiations)"
+# shellcheck disable=SC2086
+clang++ -std=c++20 -O2 -Wno-deprecated-declarations $CTRE_CXXFLAGS \
+    -o "$CMP/ctre/ctre_bench" "$CMP/ctre/bench.cpp"
+"$CMP/ctre/ctre_bench" > "$CMP/ctre.csv"
+
+echo "==> [11/13] .NET regex harness"
 dotnet build -c Release "$CMP/dotnet/Bench.csproj" >/dev/null
 dotnet "$CMP/dotnet/bin/Release/net10.0/dotnet_bench.dll" > "$CMP/dotnet.csv"
 
-echo "==> [8/9] Python stdlib re harness"
+echo "==> [12/13] Python stdlib re harness"
 python3 "$CMP/python/bench.py" > "$CMP/python.csv"
 
-echo "==> [9/9] Python regex-module harness (PyPI 'regex'; tokenizer-grade Unicode)"
+echo "==> [13/13] Python regex-module harness (PyPI 'regex'; tokenizer-grade Unicode)"
 "$VENV_PY" "$CMP/python/bench_regex.py" > "$CMP/python_regex.csv"
 
 echo "==> Aggregating"
 {
     echo "engine,model,workload,input_bytes,iterations,compile_ns,search_ns_per_op,throughput_mb_s,match_count,note"
-    cat "$CMP/zig.csv" "$CMP/zig_dfa.csv" "$CMP/mvzr.csv" "$CMP/re2.csv" "$CMP/rust.csv" "$CMP/fancy.csv" "$CMP/dotnet.csv" "$CMP/python.csv" "$CMP/python_regex.csv"
+    cat "$CMP/zig.csv" "$CMP/zig_dfa.csv" "$CMP/mvzr.csv" "$CMP/re2.csv" \
+        "$CMP/pcre2.csv" "$CMP/posix.csv" "$CMP/stdregex.csv" "$CMP/ctre.csv" \
+        "$CMP/rust.csv" "$CMP/fancy.csv" "$CMP/dotnet.csv" "$CMP/python.csv" "$CMP/python_regex.csv"
 } > "$CMP/results.csv"
 
 python3 "$CMP/aggregate.py" "$CMP/results.csv" "$CMP/results.md"

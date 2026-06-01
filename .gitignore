@@ -10,6 +10,10 @@ compare.md
 /zig_dfa_bench
 /mvzr_bench
 /re2/re2_bench
+/pcre2/pcre2_bench
+/posix/posix_bench
+/stdregex/stdregex_bench
+/ctre/ctre_bench
 /baseline_bench
 /baseline_dfa_bench
 /candidate_bench

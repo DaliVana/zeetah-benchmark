@@ -62,18 +62,20 @@ build_side() {
     local src="$1" prefix="$2" cache="$3"
     rm -rf "$cache"
     echo "==> [$prefix] building zeetah runtime harness"
-    zig build-exe \
+    # -OReleaseFast MUST precede the `-M` module args (per-module setting; placed
+    # last it leaves modules at the Debug default — see the note in run_all.sh).
+    zig build-exe -OReleaseFast \
         --dep zeetah -Mroot="zig_bench.zig" -Mzeetah="$src" \
-        -lc -OReleaseFast --name "${prefix}_bench" --cache-dir "$cache" \
+        -lc --name "${prefix}_bench" --cache-dir "$cache" \
         -femit-bin="./${prefix}_bench"
 
     echo "==> [$prefix] building zeetah comptime-DFA harness"
     # Non-fatal, exactly as in run_all.sh: a DFA-ineligible pattern is a hard
     # @compileError, so a build failure must not abort the comparison — the
     # zeetah-dfa rows are simply omitted for this side.
-    if zig build-exe \
+    if zig build-exe -OReleaseFast \
         --dep zeetah -Mroot="zig_dfa_bench.zig" -Mzeetah="$src" \
-        -lc -OReleaseFast --name "${prefix}_dfa_bench" --cache-dir "$cache" \
+        -lc --name "${prefix}_dfa_bench" --cache-dir "$cache" \
         -femit-bin="./${prefix}_dfa_bench"; then
         eval "${prefix}_DFA_OK=1"
     else
