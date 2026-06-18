@@ -24,6 +24,17 @@ Token families embedded:
 `lookbehind_amount` reuses the `$NN.NN` price-like tokens, `unicode_prop`
 matches any word/digit run, and `atomic_token` reuses the `ident@` shape
 from e-mail tokens — so those three need no dedicated emitter.
+
+Extension-pattern coverage (added with the validation/extraction workloads):
+  - inline search tokens woven into normal lines: IPv6 address, a
+    lower+upper+digit password token (`password_strength`), a SQL-keyword
+    token from the WAF DB-name set (`sqli_nested`), and a `?k=v&k=v` query
+    string (`querystring_kv`, which also matches the existing `?id=` URIs);
+  - whole-line records (so the anchored `^…$` validators match per line under
+    `(?m)`): FQDN, ISBN-10/13, UK postcode, Swedish personnummer, a CSV row
+    with a quoted comma-bearing field (`csv_field`), and a `date LEVEL msg`
+    Grok line (`grok_named`). These dedicated lines are interleaved with the
+    normal multi-token lines so every size slice sees a mix.
 """
 import sys
 
@@ -45,6 +56,11 @@ KEYWORDS = [
 ]
 TAGS = ["div", "span", "p", "a", "li", "section"]
 B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+# DB-name tokens matched by the `sqli_nested` OWASP-CRS-style alternation.
+SQLI = [
+    "information_schema", "pg_catalog", "pg_toast", "northwind", "tempdb",
+    "master..sysdatabases", "mysql.db", "mysql.user",
+]
 
 
 def lcg(seed):
@@ -148,19 +164,84 @@ def make_token(r):
         return f"{w} {w}"                                                 # backref_word (dup)
     if sel < 188:
         return f"${r % 100000}.{r % 100:02d}"                             # lookbehind_amount
+    # --- extension search tokens (woven into normal lines) ---
+    if sel < 192:
+        return ":".join(f"{(r >> (i * 2)) & 0xffff:x}" for i in range(8))  # ipv6
+    if sel < 196:
+        return SQLI[(r >> 5) % len(SQLI)]                                 # sqli_nested
+    if sel < 198:
+        return f"?user={w}&id={r % 1000}&ref={w2}"                        # querystring_kv
     # tail: plain words keep lines natural-looking
     return WORDS[(r >> 3) % len(WORDS)]
+
+
+# --- whole-line records (anchored validators match per line under (?m)) -----
+
+def make_fqdn(r):
+    w = WORDS[(r >> 7) % len(WORDS)]
+    w2 = WORDS[(r >> 11) % len(WORDS)]
+    tld = ("com", "net", "org", "io")[r % 4]
+    return f"{w}.{w2}.example.{tld}"                                      # fqdn
+
+
+def make_isbn(r):
+    if r & 1:
+        return f"978{r % 10}{(r >> 3) % 1000000000:09d}"                  # isbn-13
+    return f"{(r >> 3) % 1000000000:09d}X"                                # isbn-10 (X check)
+
+
+def make_postal(r):
+    a = chr(65 + r % 26)
+    b = chr(65 + (r >> 5) % 26)
+    c = chr(65 + (r >> 8) % 26)
+    d = chr(65 + (r >> 12) % 26)
+    return f"{a}{b}{1 + r % 9}{(r >> 3) % 10} {r % 10}{c}{d}"             # postal_uk
+
+
+def make_personnummer(r):
+    return f"{r % 1000000:06d}-{(r >> 3) % 10}{(r >> 6) % 1000:03d}"      # personnummer_se
+
+
+def make_csv(r):
+    w = WORDS[(r >> 7) % len(WORDS)]
+    w2 = WORDS[(r >> 11) % len(WORDS)]
+    return f'{w},{r % 1000},"{w2}, and {w}",{r % 2}'                      # csv_field
+
+
+def make_password(r):
+    w = WORDS[(r >> 7) % len(WORDS)]
+    # Upper + lower + digit, length >= 8 — matches the anchored ^(?=…)…$ rule.
+    return f"{chr(65 + r % 26)}{w}{r % 100:02d}{chr(97 + (r >> 5) % 26)}q"  # password_strength
+
+
+def make_grok(r):
+    lvl = LEVELS[r % len(LEVELS)]
+    date = f"{2000 + r % 25:04d}-{1 + (r >> 3) % 12:02d}-{1 + (r >> 6) % 28:02d}"
+    n = 3 + (r >> 9) % 8
+    msg = " ".join(WORDS[(r >> (3 + i)) % len(WORDS)] for i in range(n))
+    return f"{date} {lvl} {msg}"                                          # grok_named
 
 
 def main():
     out = sys.argv[1] if len(sys.argv) > 1 else "corpus.txt"
     rng = lcg(0xC0FFEE)
+    # Dedicated whole-line record generators, selected ~1-in-48 lines each so
+    # the anchored validators / structured extractors have data at every slice
+    # while normal multi-token lines still dominate.
+    dedicated = [make_fqdn, make_isbn, make_postal, make_personnummer,
+                 make_csv, make_grok, make_password]
     buf = []
     size = 0
     while size < TARGET_BYTES:
-        n = 6 + (next(rng) % 10)
-        parts = [make_token(next(rng)) for _ in range(n)]
-        line = " ".join(parts)
+        # High bits of the LCG (the low bits have short periods, so a small
+        # modulus on them is badly non-uniform — use bits 13.. for the choice).
+        which = (next(rng) >> 13) % 48
+        if which < len(dedicated):
+            line = dedicated[which](next(rng))
+        else:
+            n = 6 + (next(rng) % 10)
+            parts = [make_token(next(rng)) for _ in range(n)]
+            line = " ".join(parts)
         buf.append(line)
         size += len(line) + 1
 

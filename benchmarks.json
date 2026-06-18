@@ -80,6 +80,25 @@
         "dotnet-regex": "(?i:[sdmt]|ll|ve|re)|(?>[^\\r\\n\\p{L}\\p{N}]?)\\p{L}+|\\p{N}{1,3}| ?(?>[^\\s\\p{L}\\p{N}]+)[\\r\\n]|\\s[\\r\\n]|\\s+(?!\\S)|\\s+"
       }
     },
-    { "id": "pathological",     "pattern": "(a+)+b", "kind": "pathological", "input": "synthetic", "dfa": true, "skip_engines": ["posix", "stdregex", "ctre"], "comptime": true }
+    { "id": "pathological",     "pattern": "(a+)+b", "kind": "pathological", "input": "synthetic", "dfa": true, "skip_engines": ["posix", "stdregex", "ctre"], "comptime": true },
+
+    { "id": "password_strength","pattern": "^(?=.*[a-z])(?=.*[A-Z])(?=.*\\d).{8,}$", "multiline": true, "skip_engines": ["mvzr", "ctre"], "comptime": true,
+      "engine_patterns": {
+        "oniguruma": "^(?=.*[a-z])(?=.*[A-Z])(?=.*\\d).{8,}$"
+      }
+    },
+    { "id": "ipv6",             "pattern": "(?:[0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}", "dfa": true, "skip_engines": ["mvzr"], "comptime": true },
+    { "id": "fqdn",             "pattern": "^(?:[a-z0-9-]+\\.)+[a-z]{2,}$", "multiline": true, "dfa": true, "skip_engines": ["mvzr", "ctre"], "comptime": true },
+    { "id": "querystring_kv",   "pattern": "(?<=[?&])([^=&#]+)=([^&#]*)", "captures": true, "skip_engines": ["mvzr", "ctre"], "comptime": true },
+    { "id": "csv_field",        "pattern": "(?:\"(?:[^\"]|\"\")*\"|[^,\\n]+)", "skip_engines": ["mvzr"], "comptime": true },
+    { "id": "grok_named",       "pattern": "(?<ts>\\d{4}-\\d{2}-\\d{2}) (?<lvl>\\w+) (?<msg>.*)", "dfa": true, "captures": true, "skip_engines": ["mvzr"], "comptime": true,
+      "engine_patterns": {
+        "python-re": "(?P<ts>\\d{4}-\\d{2}-\\d{2}) (?P<lvl>\\w+) (?P<msg>.*)"
+      }
+    },
+    { "id": "isbn",             "pattern": "^(?:\\d{9}[\\dXx]|\\d{13})$", "multiline": true, "dfa": true, "skip_engines": ["mvzr"], "comptime": true },
+    { "id": "postal_uk",        "pattern": "^[A-Za-z]{1,2}\\d{1,2}[A-Za-z]?\\s?\\d[A-Za-z]{2}$", "multiline": true, "dfa": true, "skip_engines": ["mvzr"], "comptime": true },
+    { "id": "personnummer_se",  "pattern": "^\\d{6}-[\\dpPtTfF]\\d{3}$", "multiline": true, "dfa": true, "skip_engines": ["mvzr"], "comptime": true },
+    { "id": "sqli_nested",      "pattern": "(?i:\\b(?:m(?:s(?:ys(?:ac(?:cess(?:objects|storage|xml)|es)|relationships|queries|objects)|db)|aster\\.\\.sysdatabases|ysql\\.(?:db|user))|pg_(?:catalog|toast)|information_schema|northwind|tempdb)\\b)", "skip_engines": ["mvzr", "ctre"], "comptime": true }
   ]
 }

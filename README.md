@@ -218,6 +218,19 @@ cross-engine orchestrator.
     every line and the per-line cost — not match sparsity — is what is measured;
   - **edge but real:** scientific float, JSON string, base64, unix path,
     deep keyword alternation, `foo.*bar.*baz` wildcard gaps;
+  - **validation & extraction** (an extension set chosen from a frequency study
+    of real-world regex use — see [`REGEX_USE_CASES.md`](REGEX_USE_CASES.md);
+    all are *static* source-literal patterns, the comptime `Pattern` case):
+    an anchored multi-look-ahead `password_strength` rule (`^(?=.*[a-z])…$` —
+    the only workload that chains assertions), full-form `ipv6`, anchored
+    `fqdn` domain validation, a look-behind+capture `querystring_kv`
+    (`(?<=[?&])k=v`), a `csv_field` extractor (quoted-or-bare field
+    alternation), a Grok-style named-capture `grok_named` log extractor,
+    `isbn`, a UK `postal_uk` code, a Swedish `personnummer_se` national ID,
+    and a deeply-nested OWASP-CRS-style `sqli_nested` DB-name alternation.
+    The four anchored validators (`password_strength`, `fqdn`, `isbn`,
+    `postal_uk`, `personnummer_se`) run line-anchored (`^…$` under `(?m)`)
+    over dedicated one-value-per-line records woven into the corpus;
   - **feature-heavy edge** (only the engines that support the feature run
     these — the rest emit `REJECTED`, exactly like `tokenizer`): a
     backreference duplicate-word `(\b[A-Za-z]+\b) \1`, a `(?<=\$)` look-behind
