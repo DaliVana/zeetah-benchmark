@@ -99,6 +99,10 @@
     { "id": "isbn",             "pattern": "^(?:\\d{9}[\\dXx]|\\d{13})$", "multiline": true, "dfa": true, "skip_engines": ["mvzr"], "comptime": true },
     { "id": "postal_uk",        "pattern": "^[A-Za-z]{1,2}\\d{1,2}[A-Za-z]?\\s?\\d[A-Za-z]{2}$", "multiline": true, "dfa": true, "skip_engines": ["mvzr"], "comptime": true },
     { "id": "personnummer_se",  "pattern": "^\\d{6}-[\\dpPtTfF]\\d{3}$", "multiline": true, "dfa": true, "skip_engines": ["mvzr"], "comptime": true },
-    { "id": "sqli_nested",      "pattern": "(?i:\\b(?:m(?:s(?:ys(?:ac(?:cess(?:objects|storage|xml)|es)|relationships|queries|objects)|db)|aster\\.\\.sysdatabases|ysql\\.(?:db|user))|pg_(?:catalog|toast)|information_schema|northwind|tempdb)\\b)", "skip_engines": ["mvzr", "ctre"], "comptime": true }
+    { "id": "sqli_nested",      "pattern": "(?i:\\b(?:m(?:s(?:ys(?:ac(?:cess(?:objects|storage|xml)|es)|relationships|queries|objects)|db)|aster\\.\\.sysdatabases|ysql\\.(?:db|user))|pg_(?:catalog|toast)|information_schema|northwind|tempdb)\\b)", "skip_engines": ["mvzr", "ctre"], "comptime": true },
+
+    { "id": "numlist_iter",     "pattern": "([0-9]+),?", "comptime": true },
+    { "id": "cpp_int_literal",  "pattern": "-?(?:0[xX][0-9A-Fa-f](?:'?[0-9A-Fa-f]+)*|0[bB][01](?:'?[01]+)*|[0-9](?:'?[0-9]+)*)[uU]?", "skip_engines": ["mvzr"], "comptime": true },
+    { "id": "xml_attr",         "pattern": "([\\w\\-]+)\\s*=\\s*\"([^\"]*)\"", "captures": true, "skip_engines": ["mvzr"], "comptime": true }
   ]
 }

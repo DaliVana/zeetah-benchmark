@@ -75,7 +75,7 @@ def make_token(r):
     """Map a PRNG draw to one corpus token. Bands are cumulative over r%200,
     so existing token families keep their relative proportions while the new
     ones occupy the upper half of the range."""
-    sel = r % 200
+    sel = r % 210
     w = WORDS[(r >> 7) % len(WORDS)]
     w2 = WORDS[(r >> 11) % len(WORDS)]
     # --- original families (unchanged shapes) ---
@@ -171,8 +171,21 @@ def make_token(r):
         return SQLI[(r >> 5) % len(SQLI)]                                 # sqli_nested
     if sel < 198:
         return f"?user={w}&id={r % 1000}&ref={w2}"                        # querystring_kv
-    # tail: plain words keep lines natural-looking
-    return WORDS[(r >> 3) % len(WORDS)]
+    if sel < 200:
+        return WORDS[(r >> 3) % len(WORDS)]                               # plain tail words
+    # --- CTRE-validated additions (real-world compile-time-regex use) ---
+    if sel < 205:
+        # comma-separated number list — the CTRE search_all<"([0-9]+),?"> idiom.
+        k = 3 + (r >> 5) % 5
+        return ",".join(str((r >> (i * 2)) % 1000) for i in range(k))     # numlist_iter
+    # programming-language integer literal with C++14 digit separators — the
+    # viuavm lexer token shape (hex / binary / decimal, optional sign & u suffix).
+    kind = r % 3
+    if kind == 0:
+        return f"0x{r % 0x1000:x}'{(r >> 4) % 0x1000:x}{'u' if r & 8 else ''}"
+    if kind == 1:
+        return f"0b{r % 16:04b}'{(r >> 4) % 16:04b}"
+    return f"{'-' if r & 4 else ''}{r % 1000}'{(r >> 4) % 1000:03d}{'u' if r & 16 else ''}"  # cpp_int_literal
 
 
 # --- whole-line records (anchored validators match per line under (?m)) -----
