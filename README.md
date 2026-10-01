@@ -35,58 +35,65 @@ vendored — see **[zeetah source](#zeetah-source)** below.
 
 ## Performance highlights
 
-Numbers below are from the full cross-engine `run_all.sh` against zeetah
-**v0.16.1** (adds, over `v0.16.0`: `\xHH`/octal/`\h \v \R` escapes,
-Aho-Corasick boundary literals, SIMD byte-class repetition, multi-byte
-look-behind, and line-anchored DFAs), Zig 0.16.0, `-OReleaseFast`, `count`
-model, **1 MiB** corpus slice — the size where throughput stabilises. Each
-figure is the better of zeetah's two rows (runtime meta-engine and the
-comptime-DFA path). The correctness gate passed: every non-pathological workload
-agrees on match count across all PCRE-compatible engines.
+Numbers below are from the full cross-engine `run_all.sh` (2026-10-01) against
+zeetah **v0.16.1 + 21 commits** (branch `feat/compiled-backtracker` @ `ef529c3`,
+which adds over the `v0.16.1` tag: look-around engines — a PikeVM and a
+look-aware lazy DFA — a packed runtime DFA, cross-product literal expansion,
+reverse search for end-anchored patterns, line-anchored scanning with SIMD
+spin-skip, a heap-trie engine for large pure-literal alternations, and a
+compiled comptime backtracker with first-byte alternation dispatch), Zig 0.16.0,
+`-OReleaseFast`, `count` model, **1 MiB** corpus slice — the size where
+throughput stabilises. Each figure is the better of zeetah's two rows (runtime
+meta-engine and the comptime-DFA path). The correctness gate passed: every
+non-pathological workload agrees on match count across all PCRE-compatible
+engines.
 
-**zeetah is a top-tier engine — it splits the workload set with PCRE2-JIT and
+**zeetah is a top-tier engine — it now edges PCRE2-JIT on geometric mean and
 beats every other competitor measured outright.** Geometric mean of zeetah's
 throughput relative to each engine, over the workloads each pair shares (`count`
 model, 1 MiB):
 
 | vs. engine | geomean speed | zeetah is faster on |
 |---|---:|---:|
-| **PCRE2-JIT** (de-facto C JIT backtracker) | **0.82×** | 27 / 55 |
-| **Rust `regex`** crate | **1.51×** | 35 / 49 |
-| **`fancy-regex`** (Rust look-around; tiktoken/rustbpe) | **2.59×** | 49 / 55 |
-| **CTRE** (C++ compile-time regex) | **2.82×** | 32 / 43 |
-| **RE2** (Google) | **3.32×** | 41 / 49 |
-| **.NET** `Regex` | **4.22×** | 49 / 55 |
-| **PCRE2** (interpreted) | **5.26×** | 50 / 55 |
-| **Oniguruma** (Ruby/Perl C engine) | **7.32×** | 51 / 55 |
-| **Python `re`** (stdlib) | **18.2×** | 50 / 53 |
-| PyPI **`regex`** (tokenizer-grade) | **18.6×** | 53 / 55 |
-| **mvzr** (Zig VM) | **35.4×** | 18 / 18 |
-| POSIX `regex.h` (gate-exempt) | **39.0×** | 25 / 25 |
-| C++ **`std::regex`** | **222×** | 43 / 43 |
+| **PCRE2-JIT** (de-facto C JIT backtracker) | **1.08×** | 25 / 55 |
+| **Rust `regex`** crate | **1.72×** | 36 / 49 |
+| **CTRE** (C++ compile-time regex) | **3.18×** | 36 / 43 |
+| **`fancy-regex`** (Rust look-around; tiktoken/rustbpe) | **3.40×** | 51 / 55 |
+| **RE2** (Google) | **3.78×** | 41 / 49 |
+| **.NET** `Regex` | **5.78×** | 54 / 55 |
+| **PCRE2** (interpreted) | **7.24×** | 55 / 55 |
+| **Oniguruma** (Ruby/Perl C engine) | **9.67×** | 54 / 55 |
+| PyPI **`regex`** (tokenizer-grade) | **12.5×** | 55 / 55 |
+| **Python `re`** (stdlib) | **13.9×** | 53 / 53 |
+| **mvzr** (Zig VM) | **31.5×** | 18 / 18 |
+| POSIX `regex.h` (gate-exempt) | **35.6×** | 25 / 25 |
+| C++ **`std::regex`** | **188×** | 43 / 43 |
 
-So zeetah trades blows with PCRE2-JIT — winning 27 of the 55 shared workloads,
-with PCRE2-JIT roughly 1.2× ahead on geomean (its lead now concentrated in the
-multi-lookahead validation cases added to the suite) — and **beats everything
-else outright**, including the two engines production tokenizers actually use
-(PyPI `regex`, `fancy-regex`).
+So zeetah trades blows with PCRE2-JIT — ahead on geomean (1.08×) because its
+wins are large (up to 18×) while its losses are mostly within 2×, though
+PCRE2-JIT still takes 30 of the 55 shared workloads head-to-head — and **beats
+everything else outright**, including the two engines production tokenizers
+actually use (PyPI `regex`, `fancy-regex`).
 
 Standouts:
 
-- **Pure-literal search hits 31.5 GB/s** — the fastest of *any* engine here,
-  edging PCRE2-JIT (30.2 GB/s) and beating Rust `regex` (23.5 GB/s) and RE2
-  (14.4 GB/s) — zeetah's memchr/Teddy prefilter at work.
-- **Crushes PCRE2-JIT** on DFA-eligible shapes — `email` (9.5×), `alternation`
-  (6.8×), `uri` (4.2×), `log_level` (3.3×), `personnummer_se` (2.9×) — and still
-  edges it on the feature-heavy cases only the two feature-complete engines share
-  (`lookbehind_amount` 2.1×, `backref_word` 1.5×, `atomic_token` 1.4×,
-  `unicode_prop` 1.2×).
-- **Where PCRE2-JIT still leads** — the multi-lookahead / checksum-style
-  validation workloads (`password_strength`, `sqli_nested`, `isbn`, `postal_uk`)
-  and heavy capture/anchoring cases (`tokenizer`, `html_title`/`href`,
-  `log_parse`); these are the optimisation frontier.
+- **Pure-literal search hits 31.2 GB/s** — level with PCRE2-JIT (30.8 GB/s) and
+  ahead of Rust `regex` (21.2 GB/s) and RE2 (15.8 GB/s) — zeetah's memchr/Teddy
+  prefilter at work.
+- **Crushes PCRE2-JIT** on DFA-eligible and look-behind shapes —
+  `lookbehind_amount` (17.7×), `querystring_kv` (12.1×), `email` (10.6×), `uri`
+  (9.3×), `alternation` (6.2×), `log_level` (3.2×), `personnummer_se` (2.9×) —
+  and edges it on the feature-heavy cases only the two feature-complete engines
+  share (`password_strength` 1.6×, `atomic_token` 1.4×, `backref_word` 1.4×,
+  `unicode_prop` 1.3×). The checksum-style validators that used to lose
+  (`isbn`, `postal_uk`) now win narrowly (1.1×).
+- **Where PCRE2-JIT still leads** — many-capture extraction (`grok_named` 0.20×,
+  `xml_attr` 0.35×, `html_title` 0.41×, `csv_field` 0.44×), nested look-ahead
+  (`sqli_nested` 0.45×), `wildcard_gaps` (0.47×) and the fixed-width digit
+  validators on the runtime path (`time_hms`, `date_iso`, `ssn`, ~0.5×); these
+  are the optimisation frontier.
 - **Tokenizer parity, gate-enforced.** On the verbatim GPT-4 `cl100k_base`
-  pre-tokenizer regex, zeetah produces the *identical* 322,106 match count as
+  pre-tokenizer regex, zeetah produces the *identical* 392,187 match count as
   PCRE2, PCRE2-JIT, Oniguruma, .NET, `fancy-regex` and PyPI `regex` — seven
   independent engines in lock-step.
 
