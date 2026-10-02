@@ -139,7 +139,10 @@ fn measure(
     var i: usize = 0;
     while (i < iters) : (i += 1) {
         const t0 = nowNs();
-        _ = f(C, input);
+        // Keep the result alive (see zig_bench.zig): a pure comptime matcher
+        // whose result is discarded gets dead-code-eliminated, which made the
+        // 0.16 grep/backref_word row report the newline-scan speed (~4 GB/s).
+        std.mem.doNotOptimizeAway(f(C, input));
         samples[i] = nowNs() - t0;
     }
     std.mem.sort(u64, samples, {}, lessThanU64);

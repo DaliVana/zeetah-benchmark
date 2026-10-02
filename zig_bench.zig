@@ -156,7 +156,10 @@ fn measure(
     var i: usize = 0;
     while (i < iters) : (i += 1) {
         const t0 = nowNs();
-        _ = f(re, input) catch 0;
+        // Keep the result alive: with it discarded, LLVM may prove the model
+        // pure and delete the call, timing only the harness loop (observed on
+        // Zig 0.16 for the comptime backtracker in the DFA harness).
+        std.mem.doNotOptimizeAway(f(re, input) catch 0);
         samples[i] = nowNs() - t0;
     }
     std.mem.sort(u64, samples, {}, lessThanU64);
